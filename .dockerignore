@@ -1,0 +1,16 @@
+# I build context sono le sottocartelle di docker/ (php, backoffice, comter):
+# contengono solo Dockerfile ed entrypoint. Qui si escludono editor, OS e
+# tooling locale per evitare che finiscano in un context per errore.
+
+.git/
+.gitignore
+.idea/
+.vscode/
+.DS_Store
+.claude/
+.superpowers/
+
+docs/
+README.md
+
+.env

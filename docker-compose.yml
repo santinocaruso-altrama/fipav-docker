@@ -1,0 +1,220 @@
+# Orchestratore unico dell'ecosistema FIPAV Online (ambiente di sviluppo).
+#
+#   http://localhost/            -> fipav-comter-frontend
+#   http://localhost/core/       -> fipav-core
+#   http://localhost/backoffice/ -> fipav-backoffice
+#   http://localhost:8080/       -> fipav-core (accesso legacy, compatibilita')
+#
+# Va eseguito da questa directory e assume i tre progetti come sibling:
+#
+#   fipavonline/
+#     fipav-docker/            <- qui
+#     fipav-core/
+#     fipav-backoffice/
+#     fipav-comter-frontend/
+#
+# ATTENZIONE: non avviare questo compose insieme a fipav-core/docker-compose.yml.
+# I container_name sono volutamente identici (per non rompere
+# `docker exec fipav-php php artisan ...`), quindi i due stack sono mutuamente
+# esclusivi. Questo e' l'entrypoint di riferimento.
+
+name: fipavonline
+
+services:
+  # ─── Gateway: l'unico ingresso HTTP ──────────────────────────────
+  gateway:
+    image: nginx:alpine
+    container_name: fipav-gateway
+    ports:
+      - "${GATEWAY_PORT:-80}:80"
+    volumes:
+      - ../fipav-core/src:/var/www/html:ro
+      - ./docker/gateway/default.conf:/etc/nginx/conf.d/default.conf:ro
+    environment:
+      TZ: Europe/Rome
+    depends_on:
+      - php
+      - backoffice
+      - comter
+    networks:
+      - fipav-network
+
+  # ─── fipav-core: Laravel ─────────────────────────────────────────
+  php:
+    build:
+      context: ./docker/php
+      dockerfile: Dockerfile
+    container_name: fipav-php
+    volumes:
+      - ../fipav-core/src:/var/www/html
+    environment:
+      TZ: Europe/Rome
+      APP_URL: "${CORE_APP_URL:-http://localhost/core}"
+      # Prefisso degli asset emessi da asset() (immagini delle discipline).
+      # Un percorso e non un URL: le immagini escono come /core/images/...,
+      # relative alla root e senza hostname, quindi il valore resta lo stesso
+      # in locale, staging e produzione.
+      # Indispensabile perche' comter chiama l'API server-side su
+      # http://fipav-nginx: senza questa, gli URL delle immagini uscirebbero
+      # con quell'hostname, che il browser non risolve. Vedi config/app.php.
+      ASSET_URL: "${CORE_ASSET_URL:-/core}"
+      XDEBUG_MODE: "${XDEBUG_MODE:-debug}"
+      XDEBUG_CONFIG: client_host=host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      mailpit:
+        condition: service_started
+    networks:
+      - fipav-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: fipav-nginx
+    ports:
+      - "${CORE_LEGACY_PORT:-8080}:80"
+    volumes:
+      - ../fipav-core/src:/var/www/html:ro
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    environment:
+      TZ: Europe/Rome
+    depends_on:
+      - php
+    networks:
+      - fipav-network
+
+  # ─── fipav-backoffice: Vite + React ──────────────────────────────
+  backoffice:
+    build:
+      context: ./docker/backoffice
+      dockerfile: Dockerfile
+    container_name: fipav-backoffice
+    volumes:
+      - ../fipav-backoffice:/app
+      # Maschera i node_modules dell'host (binari darwin-arm64). Popolato
+      # dall'entrypoint al primo avvio.
+      - backoffice-node-modules:/app/node_modules
+    environment:
+      TZ: Europe/Rome
+      DOCKER_DEV: "true"
+      # Vince sul .env del progetto (Vite dà priorità alle variabili reali
+      # rispetto ai file .env), quindi il dev locale su :3000 resta invariato.
+      # Same-origin rispetto al gateway: nessun CORS da configurare.
+      VITE_API_BASE_URL: "${BACKOFFICE_API_BASE_URL:-http://localhost/core}"
+      # Il client HMR deve puntare alla porta del gateway, non alla 3000
+      # interna del container.
+      VITE_HMR_CLIENT_PORT: "${GATEWAY_PORT:-80}"
+    # Nessuna porta esposta sull'host: si raggiunge solo dal gateway. Cosi' la
+    # 3000 resta libera per `npm run dev` sul Mac.
+    expose:
+      - "3000"
+    networks:
+      - fipav-network
+
+  # ─── fipav-comter-frontend: Next.js ──────────────────────────────
+  comter:
+    build:
+      context: ./docker/comter
+      dockerfile: Dockerfile
+    container_name: fipav-comter
+    volumes:
+      - ../fipav-comter-frontend:/app
+      - comter-node-modules:/app/node_modules
+    environment:
+      TZ: Europe/Rome
+      DOCKER_DEV: "true"
+      API_BASE_URL: "${COMTER_API_BASE_URL:-http://fipav-nginx/api/v1/public/cms}"
+      NEXT_PUBLIC_ROOT_DOMAIN: "${COMTER_ROOT_DOMAIN:-localhost}"
+      IMAGE_ALLOWED_DOMAINS: "${COMTER_IMAGE_ALLOWED_DOMAINS:-http://localhost}"
+      NEXT_TELEMETRY_DISABLED: "1"
+    expose:
+      - "3000"
+    networks:
+      - fipav-network
+
+  # ─── Infrastruttura condivisa ────────────────────────────────────
+  mariadb:
+    image: mariadb:11.4
+    container_name: fipav-mariadb
+    ports:
+      - "${MARIADB_PORT:-3307}:3306"
+    environment:
+      TZ: Europe/Rome
+      MARIADB_ROOT_PASSWORD: root
+      MARIADB_USER: fipav
+      MARIADB_PASSWORD: fipav
+    volumes:
+      - mariadb-data:/var/lib/mysql
+      # Eseguito solo alla creazione del volume: con il volume già popolato
+      # docker-entrypoint-initdb.d viene ignorato, quindi nessun rischio di
+      # sovrascrivere i dati esistenti.
+      - ./docker/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    command: --sql-mode=NO_AUTO_VALUE_ON_ZERO --character-set-server=utf8mb3 --collation-server=utf8mb3_general_ci
+    healthcheck:
+      # Evita che php parta prima che il DB accetti connessioni.
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    networks:
+      - fipav-network
+
+  redis:
+    image: redis:alpine
+    container_name: fipav-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    environment:
+      TZ: Europe/Rome
+    networks:
+      - fipav-network
+
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: fipav-mailpit
+    ports:
+      - "${MAILPIT_UI_PORT:-8025}:8025" # Web UI: http://localhost:8025
+      - "${MAILPIT_SMTP_PORT:-1025}:1025" # SMTP (esposto anche sull'host, opzionale)
+    environment:
+      TZ: Europe/Rome
+      MP_MAX_MESSAGES: 500
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+    networks:
+      - fipav-network
+
+  meilisearch:
+    image: getmeili/meilisearch:latest
+    container_name: fipav-meilisearch
+    ports:
+      - "${MEILI_PORT:-7700}:7700"
+    environment:
+      TZ: Europe/Rome
+      MEILI_MASTER_KEY: masterKey
+      MEILI_ENV: development
+    volumes:
+      - meilisearch-data:/meili_data
+    networks:
+      - fipav-network
+
+volumes:
+  # Nomi pinnati a quelli creati dal compose di fipav-core. Senza `name:`, il
+  # project name diverso genererebbe volumi nuovi e VUOTI: si perderebbe
+  # l'accesso al database camp2013 di lavoro. Con `name:` esplicito il volume
+  # viene riusato se esiste e creato se manca.
+  mariadb-data:
+    name: fipav-core_mariadb-data
+  meilisearch-data:
+    name: fipav-core_meilisearch-data
+  backoffice-node-modules:
+  comter-node-modules:
+
+networks:
+  fipav-network:
+    name: fipav-network
+    driver: bridge

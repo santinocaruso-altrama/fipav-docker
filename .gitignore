@@ -1,0 +1,13 @@
+.DS_Store
+.idea/
+/.vscode/
+.claude/
+.superpowers/
+
+# Configurazione locale: porte, URL e XDEBUG_MODE cambiano da macchina a
+# macchina. Il template versionato e' .env.example, da copiare al primo setup.
+.env
+
+# Dump prodotti da `make db-dump`, che scrive nella root del progetto.
+# Solo la root: docker/mysql/init.sql deve restare tracciato.
+/*.sql
