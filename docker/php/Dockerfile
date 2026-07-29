@@ -7,6 +7,8 @@ RUN apt-get update && apt-get install -y \
     libpng-dev \
     libjpeg-dev \
     libfreetype6-dev \
+    libwebp-dev \
+    libavif-dev \
     libonig-dev \
     libxml2-dev \
     libzip-dev \
@@ -18,7 +20,11 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Configure and install PHP extensions
-RUN docker-php-ext-configure gd --with-freetype --with-jpeg \
+# --with-webp e --with-avif servono a generare derivate leggere dei media: un
+# JPEG da 6 MB riconvertito a larghezza utile in WebP sta in poche centinaia di
+# KB. Senza questi flag GD compila lo stesso, ma imagewebp()/imageavif() non
+# esistono e ogni tentativo di conversione fallisce a runtime.
+RUN docker-php-ext-configure gd --with-freetype --with-jpeg --with-webp --with-avif \
     && docker-php-ext-configure intl \
     && docker-php-ext-install \
         pdo_mysql \

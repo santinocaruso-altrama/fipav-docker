@@ -10,7 +10,7 @@
 # dipendenze dei frontend c'e' `make fe-reset`, che tocca solo quei due volumi.
 
 .PHONY: help \
-       up down build rebuild restart ps logs \
+       up down up-staging down-staging build rebuild restart ps logs \
        logs-gateway logs-php logs-backoffice logs-comter logs-fe \
        install verify update pull \
        shell sh-backoffice sh-comter \
@@ -31,6 +31,9 @@ MEILI_PORT       ?= 7700
 
 # Deve combaciare con `name:` in docker-compose.yml: e' il prefisso dei volumi.
 PROJECT := fipavonline
+
+# L'overlay di staging va sempre applicato sopra il file base, mai da solo.
+STAGING := -f docker-compose.yml -f docker-compose.staging.yml
 
 # I tre progetti sono repo git distinti, su branch distinti. Percorsi relativi
 # perche' il compose li referenzia allo stesso modo (sibling di questa cartella).
@@ -86,6 +89,29 @@ up: ## Avvia tutto lo stack in background
 down: ## Ferma e rimuove i container (i volumi restano, DB salvo)
 	docker compose down
 
+up-staging: ## Avvia lo stack sulla macchina pubblica (HTTPS + porte chiuse)
+	@if [ "$(GATEWAY_SITES)" = "http://" ] || [ -z "$(GATEWAY_SITES)" ]; then \
+	   echo ""; \
+	   echo "$(RED)GATEWAY_SITES non e' impostato con hostname pubblici.$(RESET)"; \
+	   echo "Con il valore attuale ($(GATEWAY_SITES)) Caddy servirebbe in chiaro"; \
+	   echo "e non emetterebbe nessun certificato. Nel .env metti l'elenco:"; \
+	   echo ""; \
+	   echo "  GATEWAY_SITES=calabria.fipav.altrama.it cosenza.fipav.altrama.it"; \
+	   echo ""; \
+	   exit 1; \
+	 fi
+	docker compose $(STAGING) up -d
+	@echo ""
+	@echo "$(GREEN)Stack di staging avviato$(RESET)"
+	@echo "  Hostname serviti: $(GATEWAY_SITES)"
+	@echo ""
+	@echo "$(YELLOW)Al primo avvio$(RESET) Caddy emette i certificati: cerca"
+	@echo "  'certificate obtained successfully' nei log con $(CYAN)make logs-gateway$(RESET)"
+	@echo "  Se falliscono, i prerequisiti sono il record A wildcard e le porte 80/443."
+
+down-staging: ## Ferma lo stack di staging
+	docker compose $(STAGING) down
+
 build: ## Build delle immagini (php, backoffice, comter)
 	docker compose build
 
@@ -102,7 +128,7 @@ ps: ## Stato dei container
 logs: ## Log di tutti i container (follow)
 	docker compose logs -f
 
-logs-gateway: ## Log del gateway nginx (routing dei tre path)
+logs-gateway: ## Log del gateway Caddy (routing e certificati)
 	docker compose logs -f gateway
 
 logs-php: ## Log di php-fpm (fipav-core)
@@ -207,7 +233,46 @@ verify: ## Esegue i criteri di accettazione della spec
 	   printf "$(GREEN)OK$(RESET)  (camp2013 con le sue migrazioni)\n"; \
 	 else printf "$(RED)FALLITO$(RESET)  (nessuna migrazione eseguita: volume ricreato vuoto?)\n"; fi
 	@echo ""
-	@echo "  $(YELLOW)8. HMR$(RESET) - da verificare a mano: modifica un file in"
+	@echo "  $(CYAN)Guardie del gateway$(RESET)  (regressioni silenziose: nessuna si manifesta da sola)"
+	@echo ""
+	@# Caddy risponde 200 con corpo vuoto alle richieste che nessun handler
+	@# gestisce, quindi questi controlli guardano i byte e non lo status code.
+	@printf "  %-56s" "8. i file statici di public/ sono serviti"
+	@n=$$(curl -s $(BASE)/core/robots.txt | wc -c | tr -d ' '); \
+	 if [ "$$n" -gt 0 ]; then printf "$(GREEN)OK$(RESET)  (robots.txt, $$n byte)\n"; \
+	 else printf "$(RED)FALLITO$(RESET)  (corpo vuoto: manca file_server nel Caddyfile?)\n"; fi
+	@printf "  %-56s" "9. i media di storage/ sono serviti, con CORS"
+	@f=$$(find ../fipav-core/src/storage/app/public -type f \( -name '*.jpg' -o -name '*.png' -o -name '*.webp' \) 2>/dev/null | head -1); \
+	 if [ -z "$$f" ]; then printf "$(YELLOW)SALTATO$(RESET)  (nessun media in storage/app/public)\n"; \
+	 else rel=$${f#*/storage/app/public/}; \
+	   n=$$(curl -s "$(BASE)/core/storage/$$rel" | wc -c | tr -d ' '); \
+	   cors=$$(curl -sI "$(BASE)/core/storage/$$rel" | grep -ci access-control-allow-origin); \
+	   if [ "$$n" -gt 100 ] && [ "$$cors" -ge 1 ]; then printf "$(GREEN)OK$(RESET)  ($$n byte, CORS presente)\n"; \
+	   else printf "$(RED)FALLITO$(RESET)  ($$n byte, header CORS trovati: $$cors)\n"; fi; fi
+	@# La verifica di sicurezza piu' importante di tutto lo stack. storage/ e' la
+	@# directory dei file caricati dagli utenti: se un .php finito qui viene
+	@# eseguito, un upload diventa esecuzione di codice sul server.
+	@printf "  %-56s" "10. un .php in storage/ NON viene eseguito"
+	@probe=../fipav-core/src/storage/app/public/__verify-probe.php; \
+	 printf '<?php echo "PROBE-ESEGUITO";' > $$probe; \
+	 body=$$(curl -s $(BASE)/core/storage/__verify-probe.php); \
+	 code=$$(curl -s -o /dev/null -w '%{http_code}' $(BASE)/core/storage/__verify-probe.php); \
+	 rm -f $$probe; \
+	 if [ "$$code" = "404" ] && ! echo "$$body" | grep -q PROBE-ESEGUITO; then \
+	   printf "$(GREEN)OK$(RESET)  (404, codice non eseguito)\n"; \
+	 else printf "$(RED)FALLITO$(RESET)  (HTTP $$code) $(RED)RISCHIO RCE$(RESET): un upload .php viene eseguito\n"; fi
+	@printf "  %-56s" "11. /core/index.php non e' un entrypoint"
+	@code=$$(curl -s -o /dev/null -w '%{http_code}' $(BASE)/core/index.php); \
+	 if [ "$$code" = "404" ]; then printf "$(GREEN)OK$(RESET)\n"; \
+	 else printf "$(RED)FALLITO$(RESET)  (HTTP $$code)\n"; fi
+	@printf "  %-56s" "12. i dotfile non sono raggiungibili"
+	@body=$$(curl -s $(BASE)/core/.env); \
+	 code=$$(curl -s -o /dev/null -w '%{http_code}' $(BASE)/core/.env); \
+	 if [ "$$code" != "200" ] && ! echo "$$body" | grep -q 'APP_KEY'; then \
+	   printf "$(GREEN)OK$(RESET)  (HTTP $$code)\n"; \
+	 else printf "$(RED)FALLITO$(RESET)  (HTTP $$code, contenuto raggiungibile)\n"; fi
+	@echo ""
+	@echo "  $(YELLOW)13. HMR$(RESET) - da verificare a mano: modifica un file in"
 	@echo "     ../fipav-backoffice/src (e in ../fipav-comter-frontend/src) e"
 	@echo "     controlla che il browser si aggiorni senza reload."
 	@echo ""

@@ -1,0 +1,51 @@
+# Overlay per la macchina pubblica di staging. Va usato SEMPRE insieme al
+# compose base, mai da solo:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.staging.yml up -d
+#
+# oppure `make up-staging`, che lo fa per te.
+#
+# Qui non c'e' nulla sui certificati: l'HTTPS lo gestisce Caddy da se', a partire
+# dall'elenco di hostname in GATEWAY_SITES nel .env. Questo file serve a un'altra
+# cosa: restringere uno stack nato per il locale, che monta i sorgenti dall'host
+# e fa girare dei dev server, ora che e' raggiungibile da internet.
+#
+# Vedi docs/superpowers/specs/2026-07-29-https-letsencrypt-design.md
+
+services:
+  # Xdebug apre una connessione verso l'IDE a ogni richiesta: su una macchina
+  # pubblica e' un costo per niente, e va anche a cercare host.docker.internal
+  # che qui non porta da nessuna parte.
+  php:
+    environment:
+      XDEBUG_MODE: "off"
+
+  # ─── Porte dei servizi: chiuse ───────────────────────────────────
+  #
+  # Restano raggiungibili dai container sulla rete fipav-network, ma non
+  # dall'esterno della macchina.
+  #
+  # Il tag `!reset` e' necessario e non decorativo: Compose fa il merge delle
+  # liste per concatenazione, quindi un `ports: []` normale lascerebbe intatte
+  # le porte del file base. Richiede Compose >= 2.24.
+  #
+  # Per raggiungerle in debug si usa un tunnel SSH sulla macchina, non una porta
+  # pubblicata.
+  mariadb:
+    ports: !reset []
+
+  redis:
+    ports: !reset []
+
+  # Mailpit e' configurato per accettare qualunque autenticazione SMTP
+  # (MP_SMTP_AUTH_ACCEPT_ANY) e connessioni non cifrate: va bene per lo
+  # sviluppo, sarebbe un relay aperto se raggiungibile da fuori.
+  mailpit:
+    ports: !reset []
+
+  # NOTA: MEILI_ENV resta `development` e la master key resta quella del file
+  # base. Passare a `production` richiede una chiave di almeno 16 byte, quindi
+  # e' una modifica che va fatta insieme e non di sfuggita qui. Per ora la
+  # protezione e' che la porta non e' pubblicata.
+  meilisearch:
+    ports: !reset []

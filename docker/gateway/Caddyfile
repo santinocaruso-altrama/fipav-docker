@@ -1,0 +1,126 @@
+# Gateway unico dell'ecosistema FIPAV Online.
+#
+#   /            -> fipav-comter-frontend  (Next.js dev server)
+#   /core/       -> fipav-core             (Laravel, via FastCGI)
+#   /backoffice/ -> fipav-backoffice       (Vite dev server)
+#
+# Lo stesso file serve il locale e lo staging: cambia solo GATEWAY_SITES.
+# Vedi docs/superpowers/specs/2026-07-29-https-letsencrypt-design.md
+{
+	# Ignorato finche' GATEWAY_SITES non contiene hostname pubblici: senza di
+	# quelli Caddy non parla con nessuna CA.
+	acme_ca {$ACME_CA:https://acme-v02.api.letsencrypt.org/directory}
+
+	# Nessuna direttiva `email`: l'account ACME resta senza indirizzo, quindi
+	# Let's Encrypt non manda avvisi di scadenza. E' voluto. Con il rinnovo
+	# automatico quegli avvisi non servono, e la direttiva non ammette un valore
+	# vuoto: `email {$VAR}` con la variabile non impostata e' un errore di
+	# parsing, che romperebbe il gateway in locale.
+	#
+	# Per attivarli, aggiungi qui `email indirizzo@dominio` con un valore reale.
+}
+
+# In locale vale `http://`: qualunque Host sulla 80, in chiaro. E' l'equivalente
+# del `server_name _` di nginx, quindi il routing multi-tenant per sottodominio
+# di comter (src/proxy.ts -> header x-tenant) continua a funzionare con
+# calabria.localhost e simili.
+#
+# In staging contiene l'elenco degli hostname dei comitati: da quel solo fatto
+# Caddy attiva l'HTTPS automatico, emette i certificati, li rinnova e
+# reindirizza http a https. Nessun comando, ne' ora ne' fra 60 giorni.
+{$GATEWAY_SITES:http://} {
+	# Allineato al limite del nginx legacy di fipav-core: media fino a 25 MB.
+	request_body {
+		max_size 25MB
+	}
+
+	# ─── /backoffice -> Vite dev server ──────────────────────────────
+
+	redir /backoffice /backoffice/ 301
+
+	# Vite e' configurato con base '/backoffice/', quindi il path va inoltrato
+	# invariato: `handle` e non `handle_path`. Spogliare il prefisso qui
+	# romperebbe gli URL degli asset emessi dal dev server.
+	#
+	# reverse_proxy propaga l'Host originale e gestisce l'upgrade a WebSocket
+	# da se': l'HMR di Vite non richiede configurazione.
+	handle /backoffice/* {
+		reverse_proxy backoffice:3000
+	}
+
+	# ─── /core -> Laravel via FastCGI ────────────────────────────────
+
+	redir /core /core/ 301
+
+	# handle_path spoglia il prefisso, quindi la ricerca dei file su disco
+	# avviene direttamente in public/. Equivale al `rewrite ^/core/(.*)$ /$1
+	# break` che nginx usava per toccare $uri lasciando intatto $request_uri.
+	handle_path /core/* {
+		root * /var/www/html/public
+
+		# `route` impone l'ordine di valutazione che vedi scritto. Senza,
+		# Caddy applica il proprio ordine di direttive e le guardie qui sotto
+		# potrebbero essere valutate DOPO php_fastcgi, diventando inefficaci
+		# senza alcun sintomo visibile.
+		route {
+			# GUARDIA DI SICUREZZA. Due motivi, entrambi seri:
+			#
+			# 1. storage/ contiene file caricati dagli utenti. Senza questa
+			#    riga php_fastcgi eseguirebbe un .php arrivato per upload:
+			#    esecuzione di codice arbitrario. Verificato: senza la guardia
+			#    il codice viene eseguito davvero.
+			# 2. l'unico entrypoint PHP legittimo e' l'index.php implicito di
+			#    php_fastcgi, raggiunto per rewrite interno e non per URL.
+			#
+			# Il rewrite interno di php_fastcgi avviene dopo questo matcher,
+			# quindi l'applicazione continua a funzionare normalmente.
+			@php path *.php
+			respond @php 404
+
+			# Dotfile non raggiungibili (.env, .git, ...), eccetto .well-known
+			# che serve alle challenge ACME e ai file di verifica dei servizi.
+			# RE2 non ha i lookahead negativi, quindi l'eccezione si esprime
+			# con `not` invece che con (?!...).
+			@dotfiles {
+				path /.* /*/.*
+				not path /.well-known/*
+			}
+			respond @dotfiles 403
+
+			# I media di storage/public sono pubblici per design: l'header CORS
+			# consente al backoffice di leggerne i pixel via canvas (editor di
+			# crop/resize), cosa che un <img> cross-origin non permetterebbe.
+			@storage path /storage/*
+			header @storage Access-Control-Allow-Origin *
+
+			# SCRIPT_NAME e' il punto chiave di tutta questa configurazione. Da
+			# /core/index.php Symfony ricava baseUrl=/core e pathInfo=/api/...:
+			# le route continuano a fare match sui path senza prefisso, mentre
+			# url(), route(), asset() e Storage::url() generano URL con /core
+			# davanti. Senza l'override Laravel produrrebbe link verso / e
+			# Swagger UI, redirect e URL dei media si romperebbero.
+			#
+			# REQUEST_URI va riportato all'originale perche' handle_path ha
+			# spogliato il prefisso: senza, Symfony calcolerebbe pathInfo su un
+			# URI privo di /core e la deduzione di baseUrl fallirebbe.
+			php_fastcgi php:9000 {
+				env SCRIPT_NAME /core/index.php
+				env REQUEST_URI {http.request.orig_uri}
+			}
+
+			# Obbligatorio: php_fastcgi NON serve i file statici, si limita a
+			# instradare i .php. Senza questa riga favicon.ico, robots.txt,
+			# images/ e i media di storage/ tornerebbero 200 con corpo vuoto,
+			# che e' la risposta di Caddy alle richieste non gestite.
+			file_server
+		}
+	}
+
+	# ─── / -> Next.js dev server ─────────────────────────────────────
+
+	# L'Host viene propagato inalterato, cosi' il routing multi-tenant per
+	# sottodominio di comter continua a funzionare.
+	handle {
+		reverse_proxy comter:3000
+	}
+}

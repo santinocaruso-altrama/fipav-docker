@@ -21,17 +21,32 @@
 name: fipavonline
 
 services:
-  # ─── Gateway: l'unico ingresso HTTP ──────────────────────────────
+  # ─── Gateway: l'unico ingresso HTTP/HTTPS ────────────────────────
   gateway:
-    image: nginx:alpine
+    image: caddy:alpine
     container_name: fipav-gateway
     ports:
       - "${GATEWAY_PORT:-80}:80"
+      # Pubblicata anche in locale, dove resta inutilizzata: con
+      # GATEWAY_SITES=http:// Caddy non ascolta in TLS. Averla sempre qui evita
+      # un file di override che esisterebbe solo per aggiungere una porta.
+      - "${HTTPS_PORT:-443}:443"
     volumes:
       - ../fipav-core/src:/var/www/html:ro
-      - ./docker/gateway/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./docker/gateway/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificati e chiavi dell'account ACME. Volume OBBLIGATORIO, non
+      # un'ottimizzazione: senza, ogni ricreazione del container riemette da
+      # zero e consuma i rate limit di Let's Encrypt (5 certificati a settimana
+      # per set di nomi).
+      - caddy-data:/data
+      - caddy-config:/config
     environment:
       TZ: Europe/Rome
+      # `http://` in locale, l'elenco degli hostname in staging. E' l'unica
+      # differenza fra i due ambienti: da un elenco di nomi pubblici Caddy
+      # ricava da se' che deve emettere i certificati e reindirizzare a https.
+      GATEWAY_SITES: "${GATEWAY_SITES:-http://}"
+      ACME_CA: "${ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}"
     depends_on:
       - php
       - backoffice
@@ -144,7 +159,7 @@ services:
       - "${MARIADB_PORT:-3307}:3306"
     environment:
       TZ: Europe/Rome
-      MARIADB_ROOT_PASSWORD: root
+      MARIADB_ROOT_PASSWORD: "${MARIADB_ROOT_PASSWORD:-root}"
       MARIADB_USER: fipav
       MARIADB_PASSWORD: fipav
     volumes:
@@ -213,6 +228,10 @@ volumes:
     name: fipav-core_meilisearch-data
   backoffice-node-modules:
   comter-node-modules:
+  # Certificati e account ACME di Caddy. Da non cancellare: perderli significa
+  # riemettere tutti i certificati al riavvio successivo.
+  caddy-data:
+  caddy-config:
 
 networks:
   fipav-network:
