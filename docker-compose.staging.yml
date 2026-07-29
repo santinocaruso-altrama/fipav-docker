@@ -49,3 +49,11 @@ services:
   # protezione e' che la porta non e' pubblicata.
   meilisearch:
     ports: !reset []
+
+  # L'accesso legacy a fipav-core con l'API sulla root. Il servizio deve restare
+  # in piedi: comter lo chiama da dentro la rete Docker
+  # (COMTER_API_BASE_URL=http://fipav-nginx/...). Ma la porta non va pubblicata,
+  # o su una macchina pubblica esisterebbe un secondo ingresso all'API, in
+  # chiaro e senza passare dal gateway.
+  nginx:
+    ports: !reset []

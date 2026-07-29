@@ -276,29 +276,83 @@ richieste successive servono il file già pronto, senza toccare PHP.
 Il gateway è Caddy, che gestisce i certificati da sé. Non c'è nessun certbot, nessun rinnovo da
 ricordare, nessun record DNS da inserire a ogni scadenza.
 
-**Una volta sola**, sul DNS: un record `A` wildcard `*.fipav.altrama.it` verso l'IP della
-macchina, e le porte 80 e 443 aperte. Il wildcard è quello che rende superfluo tornare sul DNS
-per ogni comitato nuovo — ed è un record DNS banale, niente a che vedere con un *certificato*
-wildcard.
+**Una volta sola**, sulla macchina:
 
-Poi nel `.env` della macchina:
+1. **DNS**: un record `A` wildcard `*.fipav.altrama.it` verso l'IP. È quello che rende superfluo
+   tornare sul DNS per ogni comitato nuovo — ed è un record DNS banale, niente a che vedere con
+   un *certificato* wildcard.
+2. **Firewall**: porte 80 e 443 aperte. Servono entrambe: la 443 per il traffico, la 80 per la
+   validazione ACME e per redirigere chi digita l'URL senza schema. Su GCP
+   `gcloud compute instances add-tags <VM> --zone <ZONA> --tags http-server,https-server`,
+   e controlla anche `ufw status` sulla macchina.
+3. **I quattro repo come sibling**, perché il compose li referenzia con path relativi:
+
+   ```
+   fipavonline/
+     fipav-docker/            <- qui
+     fipav-core/
+     fipav-backoffice/
+     fipav-comter-frontend/
+   ```
+
+Poi `cp .env.example .env` e, nel `.env` della macchina:
 
 ```sh
+# Gli hostname serviti. Attiva l'HTTPS automatico.
 GATEWAY_SITES=calabria.fipav.altrama.it cosenza.fipav.altrama.it lazio.fipav.altrama.it roma.fipav.altrama.it
+
+# INDISPENSABILE: da qui comter ricava il tenant dal sottodominio. Lasciato a
+# `localhost` il confronto in src/proxy.ts non matcha, si applica il fallback e
+# OGNI hostname servirebbe il tenant `calabria`. Il sintomo e' subdolo: calabria
+# funziona, gli altri comitati mostrano i contenuti sbagliati.
+COMTER_ROOT_DOMAIN=fipav.altrama.it
+
+# Un percorso, non un URL: axios lo usa come baseURL relativo, quindi le
+# chiamate restano same-origin su QUALUNQUE hostname. Un URL assoluto ne
+# fisserebbe uno solo e romperebbe il backoffice sugli altri comitati.
+BACKOFFICE_API_BASE_URL=/core
+
+# Solo per gli URL generati da CLI (queue, mail, artisan): nelle richieste HTTP
+# Laravel deduce il base URL dalla request.
+CORE_APP_URL=https://calabria.fipav.altrama.it/core
+
 MARIADB_ROOT_PASSWORD=<qualcosa che non sia root>
 ```
 
 ```sh
-make up-staging
+make build && make up-staging
 ```
 
 Caddy ottiene i certificati al primo avvio e reindirizza http a https. `make up-staging` si
 rifiuta di partire se `GATEWAY_SITES` è ancora `http://`, per non ritrovarsi una macchina
 pubblica che serve in chiaro senza accorgersene.
 
+Al primo giro conviene mettere `ACME_CA` sulla directory di staging di Let's Encrypt (è
+commentata in `.env.example`): i certificati non sono validi per i browser, ma se qualcosa non
+va non si consumano i rate limit, che sono 5 certificati a settimana per set di nomi. Quando
+funziona, si rimette la riga di produzione e si riavvia.
+
 L'overlay `docker-compose.staging.yml` fa anche il resto del lavoro che una macchina pubblica
-richiede: chiude le porte di MariaDB, Redis, Mailpit e Meilisearch (raggiungibili solo dalla rete
-Docker) e spegne Xdebug.
+richiede: **chiude tutte le porte tranne 80 e 443** — MariaDB, Redis, Mailpit, Meilisearch e
+l'accesso legacy `:8080`, che altrimenti sarebbe un secondo ingresso all'API in chiaro,
+scavalcando il gateway — e spegne Xdebug. I servizi continuano a girare, raggiungibili solo
+dalla rete Docker.
+
+### Verificare che sia andata
+
+```sh
+make logs-gateway          # cerca "certificate obtained successfully"
+curl -sI http://calabria.fipav.altrama.it/          # atteso: 301 verso https
+curl -sI https://calabria.fipav.altrama.it/core/api/documentation   # atteso: 200
+curl -sI https://cosenza.fipav.altrama.it/          # 200, e nessun avviso di certificato
+```
+
+Poi apri Swagger in un browser su https e guarda la console: **nessun avviso di mixed content**.
+È la verifica che `trustProxies` in `fipav-core` sta funzionando; senza, Laravel genera URL
+`http://` dentro pagine `https://` e il browser li blocca.
+
+Se i certificati non arrivano, nel 99% dei casi è uno dei tre prerequisiti: DNS che non risolve,
+porte chiuse, o un record `AAAA` che punta altrove (le CA preferiscono IPv6 quando esiste).
 
 ### Aggiungere un comitato
 
