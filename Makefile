@@ -100,6 +100,35 @@ up-staging: ## Avvia lo stack sulla macchina pubblica (HTTPS + porte chiuse)
 	   echo ""; \
 	   exit 1; \
 	 fi
+	@# COMTER_API_BASE_URL e' una chiamata server-side dentro la rete Docker,
+	@# quindi vuole hostname del container E schema. Senza schema comter fallisce
+	@# a runtime con "Failed to parse URL" e ogni pagina risponde 500: un errore
+	@# che si manifesta lontano dalla sua causa, quindi si intercetta qui.
+	@case "$(COMTER_API_BASE_URL)" in \
+	   ""|http://*|https://*) ;; \
+	   *) echo ""; \
+	      echo "$(RED)COMTER_API_BASE_URL non ha lo schema.$(RESET)  (valore: $(COMTER_API_BASE_URL))"; \
+	      echo "E' l'URL che comter chiama server-side, dentro la rete Docker:"; \
+	      echo "vuole l'hostname del container, non il dominio pubblico."; \
+	      echo ""; \
+	      echo "  COMTER_API_BASE_URL=http://fipav-nginx/api/v1/public/cms"; \
+	      echo ""; \
+	      echo "Da non confondere con COMTER_ROOT_DOMAIN, che e' il dominio"; \
+	      echo "pubblico senza schema (es. fipav.altrama.it)."; \
+	      echo ""; \
+	      exit 1;; \
+	 esac
+	@if [ "$(COMTER_ROOT_DOMAIN)" = "localhost" ]; then \
+	   echo ""; \
+	   echo "$(RED)COMTER_ROOT_DOMAIN e' ancora 'localhost'.$(RESET)"; \
+	   echo "Da qui comter ricava il tenant dal sottodominio: lasciandolo cosi'"; \
+	   echo "il confronto non matcha, scatta il fallback e OGNI hostname servirebbe"; \
+	   echo "il tenant calabria. Il sintomo inganna, perche' calabria funziona."; \
+	   echo ""; \
+	   echo "  COMTER_ROOT_DOMAIN=fipav.altrama.it"; \
+	   echo ""; \
+	   exit 1; \
+	 fi
 	docker compose $(STAGING) up -d
 	@echo ""
 	@echo "$(GREEN)Stack di staging avviato$(RESET)"
