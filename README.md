@@ -190,6 +190,30 @@ Il rovescio della medaglia è che `down --volumes` lo cancellerebbe. Nessun targ
 `Makefile` passa quel flag, ed è meglio non aggiungerlo. Per ripulire solo le dipendenze dei
 frontend c'è `make fe-reset`.
 
+### I warning su volumi e rete sono attesi: non "sistemarli"
+
+A ogni avvio Docker Compose stampa:
+
+```
+WARN a network with name fipav-network exists but was not created for project "fipavonline".
+     Set `external: true` to use an existing network
+volume "fipav-core_mariadb-data" already exists but was created for project "fipav-core"
+     (expected "fipavonline"). Use `external: true` to use an existing volume
+```
+
+Sono la conseguenza diretta del `name:` pinnato, e **il rimedio suggerito da Docker romperebbe
+il deploy su una macchina nuova**. Verificato:
+
+| | se il volume/la rete non esiste |
+| --- | --- |
+| `external: true` | **fallisce**: `external volume "..." not found` |
+| solo `name:` (com'è ora) | **lo crea e parte** |
+
+In locale i volumi esistono già, quindi `external: true` sembrerebbe funzionare. Al primo
+`make up-staging` su una macchina pulita, dove non esiste nulla, lo stack non partirebbe.
+La configurazione attuale copre entrambi i casi: riusa se c'è, crea se manca. I due warning
+sono il prezzo, e vanno lasciati stare.
+
 ### Dipendenze dei frontend
 
 I `node_modules` sul Mac contengono binari compilati per darwin-arm64 (`esbuild`, `next-swc`,
