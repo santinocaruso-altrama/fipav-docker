@@ -122,6 +122,7 @@ host :80 / :443  (Host qualsiasi in locale; in staging gli hostname dei comitati
     |
 fipav-gateway (Caddy)
     |-- /            --> proxy   comter:3000        (Host inalterato, WebSocket per HMR)
+    |-- /core/live/  --> file    public/live/*.json (statico, PHP fuori dal percorso)
     |-- /core/       --> fastcgi php:9000           (SCRIPT_NAME=/core/index.php)
     |-- /backoffice/ --> proxy   backoffice:3000    (path invariato, WebSocket per HMR)
 
@@ -165,6 +166,123 @@ hostname, identiche in locale, staging e produzione.
 Richiede la chiave `asset_url` in `fipav-core/src/config/app.php` e che i controller usino
 `asset()` e non `url()`. Lasciata vuota, `asset()` ricade sul root della request, cioè il
 comportamento storico di chi lancia `fipav-core` da solo.
+
+### Live score: snapshot statici, non SSE né WebSocket
+
+#### Il problema
+
+Il live score pubblico di comter ha numeri che rendono sbagliata la soluzione istintiva:
+
+- fino a **10.000 spettatori contemporanei su un singolo comitato**;
+- **90 comitati**, non tutti in gioco insieme;
+- il punteggio cambia **ogni 1-2 minuti**, non a ogni azione.
+
+Il dato è **pubblico e identico per tutti** gli spettatori dello stesso comitato: nessuna
+autenticazione, nessuna personalizzazione, nessuna bidirezionalità. È questa combinazione —
+tanti lettori, stesso contenuto, bassa frequenza — a decidere l'architettura.
+
+#### La soluzione adottata
+
+Un file JSON per comitato, rigenerato **a evento** e servito dal `file_server` di Caddy. Il
+frontend fa polling ogni 30 s.
+
+```
+evento (i risultati cambiano)
+    |
+    v
+App\Services\LiveScoreSnapshot::write($slug)      <- PHP: 1 invocazione per aggiornamento
+    |  scrittura atomica (temp + rename)
+    v
+fipav-core/src/public/live/<slug>.json
+    |
+    v
+Caddy  handle /live/*  ->  file_server            <- PHP fuori dal percorso della richiesta
+    |
+    v
+10.000 browser, polling 30s (src/hooks/useLiveScore.ts)
+```
+
+I 30 s di ritardo massimo sono irrilevanti su un ciclo di aggiornamento da 60-120 s. In cambio
+spariscono le connessioni persistenti, il container di broadcast, e l'autorizzazione per tenant
+dei canali — che qui non servirebbe comunque, perché il dato è pubblico.
+
+#### Il vantaggio sui grandi numeri
+
+La proprietà che conta è una sola: **il costo su PHP non dipende da quanti stanno guardando.**
+
+> È `O(aggiornamenti)`, non `O(spettatori × aggiornamenti)`.
+
+Un spettatore o diecimila, PHP viene invocato lo stesso numero di volte: una per evento. Tutto
+il traffico dei lettori si ferma su `file_server`, che fa decine di migliaia di richieste al
+secondo per core. Aggiungere un comitato che gioca costa **un file in più**, non capacità in più.
+
+Confronto a 10.000 spettatori su un comitato:
+
+| Approccio | Cosa resta aperto | Carico su php-fpm | Dove cede |
+| --- | --- | --- | --- |
+| Endpoint dinamico + polling | niente | ~330 req/s | php-fpm ne regge ~100 → **collassa tutto il backend** |
+| SSE in php-fpm (*c'era*) | 1 connessione **e 1 worker** per spettatore | 10.000 worker | **a 5 spettatori** |
+| WebSocket (Reverb) | 1 connessione per spettatore | ~0 | container nuovo, Redis pub/sub, ~5-10k conn per processo |
+| **File statico + polling** *(adottato)* | niente | **1 invocazione per evento** | la banda, non la CPU |
+
+Numeri misurati sullo snapshot reale (5.131 byte, **656 compressi** con `encode`):
+
+| | a 10.000 spettatori |
+| --- | --- |
+| richieste/s verso il gateway | ~333 |
+| di cui che toccano PHP | **0** |
+| invocazioni PHP | 1 per comitato, per aggiornamento |
+| traffico fra un aggiornamento e l'altro (solo 304) | ~66 KB/s |
+| picco quando il file cambia | 6,5 MB su 30 s ≈ **1,7 Mbit/s** |
+
+Su più comitati in contemporanea la differenza si allarga: tre comitati da 10.000 spettatori
+sono ~1.000 req/s su un file server statico (nulla) e 3 invocazioni PHP per evento. Con i
+WebSocket sarebbero **30.000 connessioni persistenti**, oltre la capacità di un singolo processo
+Reverb, quindi scaling orizzontale e bilanciamento.
+
+Il limite vero è la **banda al momento dell'aggiornamento**, non la CPU: quando il file cambia,
+tutti gli spettatori ne scaricano il corpo intero entro la finestra di polling. Per questo la
+direttiva `encode` nel Caddyfile e un payload piccolo contano più di qualunque altro tuning.
+
+#### Cosa è stato rimosso
+
+Qui prima c'era uno stream SSE — `while (true) { … sleep(5); }` dentro php-fpm, con un route
+handler Next che lo riproxava verso il browser. Teneva occupato un worker per ogni spettatore
+su un pool che ne ha 5 (`pm.max_children` di default nell'immagine ufficiale, che questo repo
+non sovrascrive): **cinque visitatori sulla home bastavano a rendere irraggiungibile tutto il
+backend**, backoffice e API comprese. E spingeva ogni 5 secondi un dato che cambia ogni 1-2
+minuti, 24 volte il traffico necessario.
+
+#### Il confine
+
+Questo impianto regge finché il dato è **pubblico, uguale per tutti e a bassa frequenza**. Se
+servisse il punto-a-punto in tempo reale, o contenuti diversi per utente autenticato, non si
+estende e andrebbe rivalutato un broadcast vero (Laravel Reverb + Redis). Costruirlo oggi
+significherebbe pagarne la complessità senza usarne nessuna proprietà.
+
+#### Operatività
+
+**Generare gli snapshot:**
+
+```sh
+docker exec fipav-php php artisan livescore:snapshot calabria   # un comitato
+docker exec fipav-php php artisan livescore:snapshot --all      # tutti i tenant attivi
+```
+
+`public/live/` è nel `.gitignore` di `fipav-core`: sono artefatti rigenerabili, come
+`public/build`. Su una macchina nuova la directory è vuota finché non parte il primo evento o
+non si lancia il comando.
+
+**Se lo snapshot non esiste**, il gateway risponde `[]` con 200 e il frontend mostra "nessuna
+partita". Il blocco `handle /live/*` nel Caddyfile serve esattamente a questo: senza,
+`php_fastcgi` ripiegherebbe su `index.php` e un comitato senza file manderebbe tutto il suo
+polling dentro PHP — cioè il carico che questo impianto esiste per evitare.
+
+Il punto da chiamare quando i risultati cambiano è uno solo:
+
+```php
+app(LiveScoreSnapshot::class)->write($tenantSlug);
+```
 
 ## Cose da sapere
 

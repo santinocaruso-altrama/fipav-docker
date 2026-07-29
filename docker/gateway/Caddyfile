@@ -34,6 +34,14 @@
 		max_size 25MB
 	}
 
+	# Compressione delle risposte testuali. Conta soprattutto per gli snapshot
+	# del live score: quando il file cambia, tutti gli spettatori di quel
+	# comitato ne scaricano il corpo intero entro la finestra di polling. Con
+	# 10.000 spettatori un JSON da 20 KB sono 200 MB di picco, ~40 MB
+	# compresso. E' il limite piu' vicino di tutto l'impianto, ed e' banda,
+	# non CPU.
+	encode zstd gzip
+
 	# ─── /backoffice -> Vite dev server ──────────────────────────────
 
 	redir /backoffice /backoffice/ 301
@@ -87,6 +95,39 @@
 				not path /.well-known/*
 			}
 			respond @dotfiles 403
+
+			# Snapshot statici del live score, rigenerati a evento da
+			# App\Services\LiveScoreSnapshot.
+			#
+			# `handle` chiude il percorso: queste richieste non arrivano mai a
+			# php_fastcgi, ed e' tutto il punto. 10.000 spettatori su un
+			# comitato fanno ~330 richieste/s, contro il centinaio che regge il
+			# pool php-fpm.
+			#
+			# Senza questo blocco basterebbe un file mancante per vanificare
+			# l'impianto: php_fastcgi ripiega su index.php quando il path non
+			# esiste su disco, quindi un comitato senza snapshot manderebbe
+			# TUTTO il suo polling dentro PHP. Verificato: prima di questo
+			# blocco /core/live/lazio.json rispondeva 502.
+			handle /live/* {
+				# max-age sotto l'intervallo di polling del client (30s): entro
+				# quella finestra il browser risponde dalla propria cache senza
+				# toccare la rete, oltre rivalida con l'ETag che file_server
+				# emette da se' e riceve un 304 da poche centinaia di byte.
+				header Cache-Control "public, max-age=20, stale-while-revalidate=60"
+
+				# Snapshot non ancora generato (comitato senza partite, o prima
+				# del primo evento): lista vuota, non un errore. Il frontend
+				# mostra "nessuna partita" invece di uno stato di errore, e
+				# nessuna richiesta tocca PHP.
+				@missing not file
+				header @missing Content-Type application/json
+				respond @missing "[]" 200 {
+					close
+				}
+
+				file_server
+			}
 
 			# I media di storage/public sono pubblici per design: l'header CORS
 			# consente al backoffice di leggerne i pixel via canvas (editor di
