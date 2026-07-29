@@ -20,6 +20,40 @@ services:
     environment:
       XDEBUG_MODE: "off"
 
+  # ─── Frontend: build di produzione, non dev server ───────────────
+  #
+  # Perche' non bastava sbloccare gli host nei dev server: sia Vite
+  # (server.allowedHosts) sia Next (allowedDevOrigins) validano l'Host in
+  # sviluppo, e andrebbero aggiornati a ogni comitato nuovo. Con le build di
+  # produzione quei controlli non esistono - sono funzioni dei soli dev server -
+  # quindi aggiungere un comitato resta una riga in GATEWAY_SITES, come da
+  # progetto. In piu' spariscono sorgenti e sourcemap esposti, e le pagine non
+  # si ricompilano a ogni richiesta.
+  #
+  # NOTA: NODE_ENV resta `development` (dal Dockerfile) di proposito. Gli
+  # entrypoint installano le dipendenze PRIMA di eseguire questi comandi, e
+  # tutto cio' che serve alla build sta nelle devDependencies (vite,
+  # typescript, tailwindcss): con NODE_ENV=production verrebbero saltate e la
+  # build fallirebbe. `next build` e `vite build` impostano da se' la modalita'
+  # produzione degli artefatti, che e' quello che conta.
+
+  comter:
+    # Build a ogni avvio, poi il server di produzione. `exec` perche' il segnale
+    # di stop arrivi a next e non alla shell.
+    # La prima esecuzione richiede qualche minuto: fino ad allora la root
+    # risponde 502.
+    command:
+      - sh
+      - -c
+      - ./node_modules/.bin/next build && exec ./node_modules/.bin/next start --hostname 0.0.0.0 --port 3000
+
+  backoffice:
+    # Una SPA: si compila e basta, non serve nessun processo in ascolto. Il
+    # container esegue la build in ../fipav-backoffice/build (bind mount) e
+    # termina; da li' i file li serve il gateway.
+    command: ["./node_modules/.bin/vite", "build"]
+    restart: "no"
+
   # ─── Porte dei servizi: chiuse ───────────────────────────────────
   #
   # Restano raggiungibili dai container sulla rete fipav-network, ma non
@@ -49,6 +83,19 @@ services:
   # protezione e' che la porta non e' pubblicata.
   meilisearch:
     ports: !reset []
+
+  gateway:
+    environment:
+      # Serve /backoffice/ dai file statici invece che dal dev server.
+      BACKOFFICE_HANDLER: /etc/caddy/backoffice-prod.conf
+    volumes:
+      - ../fipav-backoffice/build:/srv/backoffice:ro
+    depends_on:
+      # Il gateway parte quando la build e' finita, non prima: altrimenti la
+      # prima richiesta a /backoffice/ troverebbe la directory vuota e Caddy
+      # servirebbe un 404 che sembra un errore di configurazione.
+      backoffice:
+        condition: service_completed_successfully
 
   # L'accesso legacy a fipav-core con l'API sulla root. Il servizio deve restare
   # in piedi: comter lo chiama da dentro la rete Docker

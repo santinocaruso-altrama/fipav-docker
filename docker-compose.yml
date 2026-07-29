@@ -34,6 +34,12 @@ services:
     volumes:
       - ../fipav-core/src:/var/www/html:ro
       - ./docker/gateway/Caddyfile:/etc/caddy/Caddyfile:ro
+      # I due modi di servire /backoffice/: proxy al dev server (default) o file
+      # statici della build (staging). Il Caddyfile ne importa uno in base a
+      # BACKOFFICE_HANDLER. Montati entrambi sempre, cosi' l'overlay cambia solo
+      # una variabile.
+      - ./docker/gateway/backoffice-dev.conf:/etc/caddy/backoffice-dev.conf:ro
+      - ./docker/gateway/backoffice-prod.conf:/etc/caddy/backoffice-prod.conf:ro
       # Certificati e chiavi dell'account ACME. Volume OBBLIGATORIO, non
       # un'ottimizzazione: senza, ogni ricreazione del container riemette da
       # zero e consuma i rate limit di Let's Encrypt (5 certificati a settimana

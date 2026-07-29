@@ -362,6 +362,52 @@ l'accesso legacy `:8080`, che altrimenti sarebbe un secondo ingresso all'API in 
 scavalcando il gateway — e spegne Xdebug. I servizi continuano a girare, raggiungibili solo
 dalla rete Docker.
 
+### In staging i frontend sono build di produzione
+
+In locale girano i dev server (HMR, sorgenti bind-mountati). In staging no:
+
+| | locale | staging |
+| --- | --- | --- |
+| comter | `next dev` | `next build` + `next start` |
+| backoffice | dev server Vite | `vite build`, file statici serviti da Caddy |
+
+Non è una preferenza, è un requisito. Sia Vite (`server.allowedHosts`) sia Next
+(`allowedDevOrigins`) **validano l'Host in sviluppo**: con i dev server, ogni comitato nuovo
+andrebbe aggiunto anche a `vite.config.ts` e `next.config.ts`, e non sarebbe più vero che basta
+una riga nel `.env`. Quei controlli sono funzioni dei soli dev server e in produzione non
+esistono — la documentazione di Next dice esplicitamente *"during development"*.
+
+In più spariscono sorgenti e sourcemap esposti su una macchina pubblica, e le pagine non si
+ricompilano a ogni richiesta.
+
+Come è realizzato, senza duplicare la configurazione: il Caddyfile importa lo snippet
+dell'handler di `/backoffice/`, e la variabile `BACKOFFICE_HANDLER` sceglie **quale file**
+(`backoffice-dev.conf`, proxy al dev server, oppure `backoffice-prod.conf`, file statici).
+Resta un solo Caddyfile e la differenza sta in due file brevi e affiancati. Il container del
+backoffice in staging esegue la build e **termina**: non c'è nessun processo Node in ascolto,
+e il gateway attende che la build sia completata prima di partire.
+
+Conseguenza pratica: **la prima `make up-staging` richiede qualche minuto**, perché comter
+compila prima di servire. Fino ad allora la root risponde 502. Lo stesso vale dopo ogni
+`make update`, dato che la build viene rifatta a ogni avvio del container.
+
+### Aggiungere un comitato: cosa NON lo blocca
+
+Verificato anello per anello, perché è il requisito centrale del progetto:
+
+| Anello | Blocca un hostname nuovo? |
+| --- | --- |
+| DNS | no, il record `A` wildcard lo copre |
+| **Caddy** | **sì, se non è in `GATEWAY_SITES`** — è l'unico punto da toccare |
+| Next (`next start`) | no, il controllo sull'origin è solo in sviluppo |
+| Vite (build) | no, non c'è nessun server |
+| `proxy.ts` di comter | no, ricava il tenant da qualunque sottodominio |
+| Laravel | no, il progetto non usa `TrustHosts` |
+
+Se dimentichi di aggiungerlo a `GATEWAY_SITES`, Caddy non ha un certificato per quel nome: il
+browser mostra un **errore TLS**, non un 404. È un sintomo utile, perché indica subito il `.env`
+e non un problema applicativo.
+
 ### Verificare che sia andata
 
 ```sh

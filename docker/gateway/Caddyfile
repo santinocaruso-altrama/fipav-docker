@@ -38,14 +38,15 @@
 
 	redir /backoffice /backoffice/ 301
 
-	# Vite e' configurato con base '/backoffice/', quindi il path va inoltrato
-	# invariato: `handle` e non `handle_path`. Spogliare il prefisso qui
-	# romperebbe gli URL degli asset emessi dal dev server.
+	# In sviluppo e' un proxy al dev server di Vite, in staging sono i file
+	# statici della build: due handler troppo diversi per essere scelti con una
+	# variabile dentro una direttiva, quindi la variabile sceglie il FILE.
+	# Il default e' lo sviluppo; l'overlay di staging punta a *-prod.conf.
 	#
-	# reverse_proxy propaga l'Host originale e gestisce l'upgrade a WebSocket
-	# da se': l'HMR di Vite non richiede configurazione.
+	# Cosi' resta un solo Caddyfile per i due ambienti, e la differenza e'
+	# confinata in due file brevi e affiancati, facili da confrontare.
 	handle /backoffice/* {
-		reverse_proxy backoffice:3000
+		import {$BACKOFFICE_HANDLER:/etc/caddy/backoffice-dev.conf}
 	}
 
 	# ─── /core -> Laravel via FastCGI ────────────────────────────────
