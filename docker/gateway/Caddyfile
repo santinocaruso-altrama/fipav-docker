@@ -165,4 +165,148 @@
 	handle {
 		reverse_proxy comter:3000
 	}
+
+	# ─── Pagina di attesa durante l'avvio ────────────────────────────
+
+	# Al primo avvio (o dopo un `make update` che cambia un lockfile) i
+	# frontend impiegano qualche minuto per installare le dipendenze nel
+	# volume: finche' comter:3000 o backoffice:3000 non accettano connessioni,
+	# reverse_proxy fallisce con 502. Senza questo blocco l'utente vede una
+	# pagina bianca invece di un messaggio comprensibile.
+	#
+	# Il matcher e' sullo status code, non sull'handler: cattura anche un
+	# eventuale 502/504 di php_fastcgi. In quel caso "stiamo installando" e'
+	# impreciso, ma il messaggio generico resta preferibile al corpo vuoto;
+	# lo status resta 503 (non 200), quindi non nasconde l'anomalia a chi
+	# guarda i codici di risposta o i log.
+	handle_errors {
+		@upstream_down expression `{err.status_code} == 502 || {err.status_code} == 504`
+		handle @upstream_down {
+			header Content-Type "text/html; charset=utf-8"
+			header Retry-After 10
+			respond <<HTML 503
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="10">
+<title>Fipav — Avvio in corso</title>
+<style>
+	*, *::before, *::after {
+		box-sizing: border-box;
+		margin: 0;
+		padding: 0;
+	}
+
+	body {
+		background: #005BA2;
+		min-height: 100vh;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		padding: 2rem;
+		font-family: ui-sans-serif, system-ui, sans-serif;
+	}
+
+	.card {
+		display: flex;
+		flex-direction: column-reverse;
+		width: 100%;
+		max-width: 335px;
+		border-radius: 0.5rem;
+		overflow: hidden;
+		box-shadow: 0 4px 24px rgba(0, 0, 0, .25);
+	}
+
+	.card-info {
+		background: #004a87;
+		color: #fff;
+		padding: 2rem;
+	}
+
+	.card-info .code {
+		font-size: 0.75rem;
+		font-weight: 600;
+		letter-spacing: 0.05em;
+		color: rgba(255, 255, 255, .6);
+		margin-bottom: 0.5rem;
+	}
+
+	.card-info h1 {
+		font-size: 1rem;
+		font-weight: 600;
+		margin-bottom: 0.25rem;
+	}
+
+	.card-info p {
+		font-size: 0.8125rem;
+		color: rgba(255, 255, 255, .7);
+	}
+
+	.card-info code {
+		background: rgba(255, 255, 255, .12);
+		padding: 0.1rem 0.35rem;
+		border-radius: 0.25rem;
+	}
+
+	.card-logo {
+		background: #005BA2;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		aspect-ratio: 335/376;
+		border-bottom: 1px solid rgba(255, 255, 255, .15);
+	}
+
+	.card-logo img {
+		width: 80%;
+		max-width: 280px;
+	}
+
+	@media (min-width: 64rem) {
+		.card {
+			flex-direction: row;
+			max-width: 64rem;
+		}
+
+		.card-info {
+			flex: 1;
+			padding: 5rem;
+			border-radius: 0;
+			border-top-left-radius: 0.5rem;
+			border-bottom-left-radius: 0.5rem;
+		}
+
+		.card-logo {
+			width: 438px;
+			flex-shrink: 0;
+			aspect-ratio: auto;
+			border-bottom: none;
+			border-left: 1px solid rgba(255, 255, 255, .15);
+			border-top-right-radius: 0.5rem;
+			border-bottom-right-radius: 0.5rem;
+		}
+	}
+</style>
+</head>
+<body>
+<div class="card">
+	<div class="card-info">
+		<div class="code">Avvio in corso</div>
+		<h1>Stiamo preparando il sito</h1>
+		<p>I frontend stanno installando le dipendenze: puo' richiedere qualche
+		   minuto al primo avvio. Questa pagina si aggiorna da sola ogni 10
+		   secondi.</p>
+	</div>
+	<div class="card-logo">
+		<img src="/core/images/fipav-logo.png" alt="FIPAV - Federazione Italiana Pallavolo"/>
+	</div>
+</div>
+</body>
+</html>
+HTML
+		}
+	}
 }
