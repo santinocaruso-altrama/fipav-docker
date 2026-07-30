@@ -45,6 +45,20 @@ BASE := http://localhost
 else
 BASE := http://localhost:$(GATEWAY_PORT)
 endif
+
+# BASE va bene per `make up` (Caddy in chiaro), ma appena GATEWAY_SITES ha
+# hostname pubblici Caddy attiva l'HTTPS automatico e reindirizza (308) ogni
+# richiesta in chiaro: un curl su BASE non vedrebbe mai un 200. VERIFY_BASE e'
+# quello che `verify` usa davvero: il primo hostname pubblico in HTTPS, quando
+# GATEWAY_SITES e' configurato; altrimenti BASE, invariato.
+ifeq ($(GATEWAY_SITES),)
+VERIFY_BASE := $(BASE)
+else ifeq ($(GATEWAY_SITES),http://)
+VERIFY_BASE := $(BASE)
+else
+VERIFY_BASE := https://$(firstword $(GATEWAY_SITES))
+endif
+
 # `make` senza argomenti elenca i comandi. Esplicito e non posizionale: senza
 # questo, il default sarebbe il primo target del file e basterebbe aggiungerne
 # uno sopra per cambiare il comportamento senza accorgersene.
@@ -231,32 +245,47 @@ update: pull ## git pull sui tre progetti + composer, migrazioni e riavvio front
 # richiede un browser e resta manuale: qui viene solo ricordato.
 verify: ## Esegue i criteri di accettazione della spec
 	@echo ""
-	@echo "$(CYAN)Verifica dello stack$(RESET)  ($(BASE))"
+	@echo "$(CYAN)Verifica dello stack$(RESET)  ($(VERIFY_BASE))"
 	@echo ""
 	@printf "  %-56s" "1. comter risponde sulla root"
-	@code=$$(curl -s -o /dev/null -w '%{http_code}' $(BASE)/); \
+	@code=$$(curl -s -o /dev/null -w '%{http_code}' $(VERIFY_BASE)/); \
 	 if [ "$$code" = "200" ]; then printf "$(GREEN)OK$(RESET)\n"; \
 	 else printf "$(RED)FALLITO$(RESET) (HTTP $$code)\n"; fi
 	@printf "  %-56s" "2. Swagger risponde sotto /core/"
-	@code=$$(curl -s -o /dev/null -w '%{http_code}' $(BASE)/core/api/documentation); \
+	@code=$$(curl -s -o /dev/null -w '%{http_code}' $(VERIFY_BASE)/core/api/documentation); \
 	 if [ "$$code" = "200" ]; then printf "$(GREEN)OK$(RESET)\n"; \
 	 else printf "$(RED)FALLITO$(RESET) (HTTP $$code)\n"; fi
 	@printf "  %-56s" "3. gli asset di Swagger hanno il prefisso /core/"
-	@if curl -s $(BASE)/core/api/documentation | grep -qE '(src|href)="[^"]*/core/'; then \
+	@if curl -s $(VERIFY_BASE)/core/api/documentation | grep -qE '(src|href)="[^"]*/core/'; then \
 	   printf "$(GREEN)OK$(RESET)  (SCRIPT_NAME attivo)\n"; \
 	 else printf "$(RED)FALLITO$(RESET)  (URL generati verso /, SCRIPT_NAME non applicato)\n"; fi
 	@printf "  %-56s" "4. il backoffice risponde sotto /backoffice/"
-	@code=$$(curl -s -o /dev/null -w '%{http_code}' $(BASE)/backoffice/); \
+	@code=$$(curl -s -o /dev/null -w '%{http_code}' $(VERIFY_BASE)/backoffice/); \
 	 if [ "$$code" = "200" ]; then printf "$(GREEN)OK$(RESET)\n"; \
 	 else printf "$(RED)FALLITO$(RESET) (HTTP $$code)\n"; fi
 	@printf "  %-56s" "5. compatibilita' legacy su :$(CORE_LEGACY_PORT)"
-	@code=$$(curl -s -o /dev/null -w '%{http_code}' http://localhost:$(CORE_LEGACY_PORT)/api/documentation); \
-	 if [ "$$code" = "200" ]; then printf "$(GREEN)OK$(RESET)\n"; \
-	 else printf "$(RED)FALLITO$(RESET) (HTTP $$code)\n"; fi
+	@if [ -n "$(GATEWAY_SITES)" ] && [ "$(GATEWAY_SITES)" != "http://" ]; then \
+	   printf "$(YELLOW)SALTATO$(RESET)  (porta non pubblicata in staging, per design)\n"; \
+	 else \
+	   code=$$(curl -s -o /dev/null -w '%{http_code}' http://localhost:$(CORE_LEGACY_PORT)/api/documentation); \
+	   if [ "$$code" = "200" ]; then printf "$(GREEN)OK$(RESET)\n"; \
+	   else printf "$(RED)FALLITO$(RESET) (HTTP $$code)\n"; fi; \
+	 fi
 	@printf "  %-56s" "6. multi-tenant per sottodominio (calabria)"
-	@code=$$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: calabria.localhost' $(BASE)/); \
-	 if [ "$$code" = "200" ]; then printf "$(GREEN)OK$(RESET)\n"; \
-	 else printf "$(RED)FALLITO$(RESET) (HTTP $$code)\n"; fi
+	@if [ -n "$(GATEWAY_SITES)" ] && [ "$(GATEWAY_SITES)" != "http://" ]; then \
+	   second="$(word 2,$(GATEWAY_SITES))"; \
+	   if [ -z "$$second" ]; then \
+	     printf "$(YELLOW)SALTATO$(RESET)  (un solo hostname in GATEWAY_SITES)\n"; \
+	   else \
+	     code=$$(curl -s -o /dev/null -w '%{http_code}' https://$$second/); \
+	     if [ "$$code" = "200" ]; then printf "$(GREEN)OK$(RESET)  ($$second)\n"; \
+	     else printf "$(RED)FALLITO$(RESET) (HTTP $$code su $$second)\n"; fi; \
+	   fi; \
+	 else \
+	   code=$$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: calabria.localhost' $(VERIFY_BASE)/); \
+	   if [ "$$code" = "200" ]; then printf "$(GREEN)OK$(RESET)\n"; \
+	   else printf "$(RED)FALLITO$(RESET) (HTTP $$code)\n"; fi; \
+	 fi
 	@printf "  %-56s" "7. il volume del DB e' quello preesistente"
 	@if docker compose exec -T php php artisan migrate:status 2>/dev/null | grep -q "Ran"; then \
 	   printf "$(GREEN)OK$(RESET)  (camp2013 con le sue migrazioni)\n"; \
@@ -267,36 +296,39 @@ verify: ## Esegue i criteri di accettazione della spec
 	@# Caddy risponde 200 con corpo vuoto alle richieste che nessun handler
 	@# gestisce, quindi questi controlli guardano i byte e non lo status code.
 	@printf "  %-56s" "8. i file statici di public/ sono serviti"
-	@n=$$(curl -s $(BASE)/core/robots.txt | wc -c | tr -d ' '); \
+	@n=$$(curl -s $(VERIFY_BASE)/core/robots.txt | wc -c | tr -d ' '); \
 	 if [ "$$n" -gt 0 ]; then printf "$(GREEN)OK$(RESET)  (robots.txt, $$n byte)\n"; \
 	 else printf "$(RED)FALLITO$(RESET)  (corpo vuoto: manca file_server nel Caddyfile?)\n"; fi
 	@printf "  %-56s" "9. i media di storage/ sono serviti, con CORS"
 	@f=$$(find ../fipav-core/src/storage/app/public -type f \( -name '*.jpg' -o -name '*.png' -o -name '*.webp' \) 2>/dev/null | head -1); \
 	 if [ -z "$$f" ]; then printf "$(YELLOW)SALTATO$(RESET)  (nessun media in storage/app/public)\n"; \
 	 else rel=$${f#*/storage/app/public/}; \
-	   n=$$(curl -s "$(BASE)/core/storage/$$rel" | wc -c | tr -d ' '); \
-	   cors=$$(curl -sI "$(BASE)/core/storage/$$rel" | grep -ci access-control-allow-origin); \
+	   n=$$(curl -s "$(VERIFY_BASE)/core/storage/$$rel" | wc -c | tr -d ' '); \
+	   cors=$$(curl -sI "$(VERIFY_BASE)/core/storage/$$rel" | grep -ci access-control-allow-origin); \
 	   if [ "$$n" -gt 100 ] && [ "$$cors" -ge 1 ]; then printf "$(GREEN)OK$(RESET)  ($$n byte, CORS presente)\n"; \
 	   else printf "$(RED)FALLITO$(RESET)  ($$n byte, header CORS trovati: $$cors)\n"; fi; fi
 	@# La verifica di sicurezza piu' importante di tutto lo stack. storage/ e' la
 	@# directory dei file caricati dagli utenti: se un .php finito qui viene
 	@# eseguito, un upload diventa esecuzione di codice sul server.
+	@# Il probe passa dal container (non dall'host): storage/app/public puo'
+	@# non essere scrivibile dall'utente host che lancia `make verify` (UID
+	@# diverso da quello con cui php-fpm scrive gli upload reali), e un
+	@# "Permission denied" qui non deve leggersi come "il .php viene eseguito".
 	@printf "  %-56s" "10. un .php in storage/ NON viene eseguito"
-	@probe=../fipav-core/src/storage/app/public/__verify-probe.php; \
-	 printf '<?php echo "PROBE-ESEGUITO";' > $$probe; \
-	 body=$$(curl -s $(BASE)/core/storage/__verify-probe.php); \
-	 code=$$(curl -s -o /dev/null -w '%{http_code}' $(BASE)/core/storage/__verify-probe.php); \
-	 rm -f $$probe; \
+	@docker compose exec -T php sh -c 'printf "<?php echo \"PROBE-ESEGUITO\";" > storage/app/public/__verify-probe.php'; \
+	 body=$$(curl -s $(VERIFY_BASE)/core/storage/__verify-probe.php); \
+	 code=$$(curl -s -o /dev/null -w '%{http_code}' $(VERIFY_BASE)/core/storage/__verify-probe.php); \
+	 docker compose exec -T php rm -f storage/app/public/__verify-probe.php; \
 	 if [ "$$code" = "404" ] && ! echo "$$body" | grep -q PROBE-ESEGUITO; then \
 	   printf "$(GREEN)OK$(RESET)  (404, codice non eseguito)\n"; \
 	 else printf "$(RED)FALLITO$(RESET)  (HTTP $$code) $(RED)RISCHIO RCE$(RESET): un upload .php viene eseguito\n"; fi
 	@printf "  %-56s" "11. /core/index.php non e' un entrypoint"
-	@code=$$(curl -s -o /dev/null -w '%{http_code}' $(BASE)/core/index.php); \
+	@code=$$(curl -s -o /dev/null -w '%{http_code}' $(VERIFY_BASE)/core/index.php); \
 	 if [ "$$code" = "404" ]; then printf "$(GREEN)OK$(RESET)\n"; \
 	 else printf "$(RED)FALLITO$(RESET)  (HTTP $$code)\n"; fi
 	@printf "  %-56s" "12. i dotfile non sono raggiungibili"
-	@body=$$(curl -s $(BASE)/core/.env); \
-	 code=$$(curl -s -o /dev/null -w '%{http_code}' $(BASE)/core/.env); \
+	@body=$$(curl -s $(VERIFY_BASE)/core/.env); \
+	 code=$$(curl -s -o /dev/null -w '%{http_code}' $(VERIFY_BASE)/core/.env); \
 	 if [ "$$code" != "200" ] && ! echo "$$body" | grep -q 'APP_KEY'; then \
 	   printf "$(GREEN)OK$(RESET)  (HTTP $$code)\n"; \
 	 else printf "$(RED)FALLITO$(RESET)  (HTTP $$code, contenuto raggiungibile)\n"; fi

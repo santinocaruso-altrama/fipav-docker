@@ -24,7 +24,7 @@ services:
   # ─── Gateway: l'unico ingresso HTTP/HTTPS ────────────────────────
   gateway:
     image: caddy:alpine
-    container_name: fipav-gateway
+    container_name: fipav-gateway-dev
     ports:
       - "${GATEWAY_PORT:-80}:80"
       # Pubblicata anche in locale, dove resta inutilizzata: con
@@ -113,7 +113,7 @@ services:
     build:
       context: ./docker/backoffice
       dockerfile: Dockerfile
-    container_name: fipav-backoffice
+    container_name: fipav-backoffice-dev
     volumes:
       - ../fipav-backoffice:/app
       # Maschera i node_modules dell'host (binari darwin-arm64). Popolato
@@ -141,7 +141,7 @@ services:
     build:
       context: ./docker/comter
       dockerfile: Dockerfile
-    container_name: fipav-comter
+    container_name: fipav-comter-dev
     volumes:
       - ../fipav-comter-frontend:/app
       - comter-node-modules:/app/node_modules
