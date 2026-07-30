@@ -30,28 +30,43 @@ services:
   # progetto. In piu' spariscono sorgenti e sourcemap esposti, e le pagine non
   # si ricompilano a ogni richiesta.
   #
-  # NOTA: NODE_ENV resta `development` (dal Dockerfile) di proposito. Gli
-  # entrypoint installano le dipendenze PRIMA di eseguire questi comandi, e
-  # tutto cio' che serve alla build sta nelle devDependencies (vite,
-  # typescript, tailwindcss): con NODE_ENV=production verrebbero saltate e la
-  # build fallirebbe. `next build` e `vite build` impostano da se' la modalita'
-  # produzione degli artefatti, che e' quello che conta.
+  # NOTA: NODE_ENV va sovrascritto DENTRO il comando, non in `environment`.
+  # Serve `production`, perche' ne' `next build` ne' `vite build` lo impongono
+  # (vedi i commenti sui due servizi), ma non puo' stare nell'ambiente del
+  # container: gli entrypoint installano le dipendenze prima di eseguire questi
+  # comandi, e con NODE_ENV=production `npm ci` aggiunge `dev` a `omit` di
+  # default, quindi vite/typescript/tailwind non verrebbero installati e la build
+  # fallirebbe. Nel comando la variabile arriva a install gia' fatto.
 
   comter:
     # Build a ogni avvio, poi il server di produzione. `exec` perche' il segnale
     # di stop arrivi a next e non alla shell.
     # La prima esecuzione richiede qualche minuto: fino ad allora la root
     # risponde 502.
+    #
+    # `export NODE_ENV=production` NON e' ridondante: `next build` imposta da se'
+    # `production` solo se la variabile non e' gia' valorizzata. Trovandola a
+    # `development` (dal Dockerfile) prosegue risolvendo react/react-dom con la
+    # export condition `development` dentro una pipeline di prerender di
+    # produzione. Il risultato sono due build di React nello stesso bundle, il
+    # dispatcher dei hook a null e la build che muore su /_global-error con
+    # "Cannot read properties of null (reading 'useContext')".
     command:
       - sh
       - -c
-      - ./node_modules/.bin/next build && exec ./node_modules/.bin/next start --hostname 0.0.0.0 --port 3000
+      - export NODE_ENV=production && ./node_modules/.bin/next build && exec ./node_modules/.bin/next start --hostname 0.0.0.0 --port 3000
 
   backoffice:
     # Una SPA: si compila e basta, non serve nessun processo in ascolto. Il
     # container esegue la build in ../fipav-backoffice/build (bind mount) e
     # termina; da li' i file li serve il gateway.
-    command: ["./node_modules/.bin/vite", "build"]
+    #
+    # Anche qui `export NODE_ENV=production` non e' ridondante: in Vite NODE_ENV
+    # ha la precedenza sul mode, quindi `vite build` trovandolo a `development`
+    # produce un build di sviluppo. Misurato su questo progetto: chunk principale
+    # 910 kB invece di 620 (gzip 258 invece di 192), output totale 5.1M invece di
+    # 3.3M, e il bundle di sviluppo di React servito ai comitati.
+    command: ["sh", "-c", "export NODE_ENV=production && exec ./node_modules/.bin/vite build"]
     restart: "no"
 
   # ─── Porte dei servizi: chiuse ───────────────────────────────────
