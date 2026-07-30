@@ -184,7 +184,7 @@
 		handle @upstream_down {
 			header Content-Type "text/html; charset=utf-8"
 			header Retry-After 10
-			respond <<HTML 503
+			respond <<HTML
 <!doctype html>
 <html lang="it">
 <head>
@@ -306,7 +306,7 @@
 </div>
 </body>
 </html>
-HTML
+HTML 503
 		}
 	}
 }
