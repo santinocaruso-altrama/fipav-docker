@@ -185,13 +185,20 @@ services:
     networks:
       - fipav-network
 
+  # AOF (fsync ogni secondo): senza, un riavvio del container perde tutti i
+  # job in coda (export Excel accodati ma non ancora processati) perche' redis
+  # di default tiene tutto solo in RAM. `--appendonly yes` scrive ogni comando
+  # sul volume `redis-data`, da cui redis si ricarica all'avvio.
   redis:
     image: redis:alpine
     container_name: fipav-redis
+    command: redis-server --appendonly yes --appendfsync everysec
     ports:
       - "${REDIS_PORT:-6379}:6379"
     environment:
       TZ: Europe/Rome
+    volumes:
+      - redis-data:/data
     networks:
       - fipav-network
 
@@ -232,6 +239,8 @@ volumes:
     name: fipav-core_mariadb-data
   meilisearch-data:
     name: fipav-core_meilisearch-data
+  redis-data:
+    name: fipav-core_redis-data
   backoffice-node-modules:
   comter-node-modules:
   # Certificati e account ACME di Caddy. Da non cancellare: perderli significa
