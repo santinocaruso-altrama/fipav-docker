@@ -11,3 +11,6 @@
 # Dump prodotti da `make db-dump`, che scrive nella root del progetto.
 # Solo la root: docker/mysql/init.sql deve restare tracciato.
 /*.sql
+
+# Report prodotti da `make diagnose` (docker/diagnose.sh).
+/diagnose-*/

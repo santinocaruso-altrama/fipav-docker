@@ -12,7 +12,7 @@
 .PHONY: help \
        up down up-staging down-staging build rebuild restart ps logs \
        logs-gateway logs-php logs-backoffice logs-comter logs-fe \
-       install verify update pull \
+       install verify diagnose update pull \
        shell sh-backoffice sh-comter \
        artisan composer tinker mariadb redis-cli \
        migrate migrate-status migrate-fresh seed fresh \
@@ -337,6 +337,12 @@ verify: ## Esegue i criteri di accettazione della spec
 	@echo "     ../fipav-backoffice/src (e in ../fipav-comter-frontend/src) e"
 	@echo "     controlla che il browser si aggiorni senza reload."
 	@echo ""
+
+# Isola disco/rete/applicativo quando il sito e' lento: curl con e senza uscire
+# dalla macchina, docker stats, disco, MariaDB, Redis, piu' un riepilogo.
+# Uso: make diagnose [domain=https://calabria.fipav.altrama.it/]
+diagnose: ## Diagnostica lentezza (rete/disco/app) con riepilogo
+	./docker/diagnose.sh $(or $(domain),https://calabria.fipav.altrama.it/)
 
 # ─── Shell ───────────────────────────────────────────────
 
