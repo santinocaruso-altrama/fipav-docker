@@ -59,6 +59,18 @@ else
 VERIFY_BASE := https://$(firstword $(GATEWAY_SITES))
 endif
 
+# Stessa euristica di sopra, per `fe-reset`: se GATEWAY_SITES ha hostname
+# pubblici lo stack e' di staging, e backoffice/comter vanno rimessi su con
+# l'overlay che monta la build di produzione, non con l'immagine base che
+# lancerebbe i dev server su una macchina pubblica.
+ifeq ($(GATEWAY_SITES),)
+FE_COMPOSE :=
+else ifeq ($(GATEWAY_SITES),http://)
+FE_COMPOSE :=
+else
+FE_COMPOSE := $(STAGING)
+endif
+
 # `make` senza argomenti elenca i comandi. Esplicito e non posizionale: senza
 # questo, il default sarebbe il primo target del file e basterebbe aggiungerne
 # uno sopra per cambiare il comportamento senza accorgersene.
@@ -439,11 +451,16 @@ endif
 # Tocca solo i due volumi dei frontend: mariadb-data non viene sfiorato.
 fe-reset: ## Reinstalla da zero i node_modules dei due frontend
 	@echo "$(CYAN)Rimozione dei container dei frontend...$(RESET)"
-	docker compose rm -sf backoffice comter
+	docker compose $(FE_COMPOSE) rm -sf backoffice comter
 	@echo "$(CYAN)Rimozione dei volumi node_modules...$(RESET)"
 	-docker volume rm $(PROJECT)_backoffice-node-modules
 	-docker volume rm $(PROJECT)_comter-node-modules
 	@echo "$(CYAN)Riavvio: gli entrypoint reinstallano le dipendenze...$(RESET)"
-	docker compose up -d backoffice comter
+	docker compose $(FE_COMPOSE) up -d backoffice comter
 	@echo ""
+ifeq ($(FE_COMPOSE),)
 	@echo "$(GREEN)Fatto.$(RESET) L'install richiede qualche minuto: $(CYAN)make logs-fe$(RESET)"
+else
+	@echo "$(GREEN)Fatto$(RESET) (overlay di staging: comter rifa' la build di produzione)."
+	@echo "Segui l'avanzamento con $(CYAN)make logs-comter$(RESET), poi verifica con $(CYAN)make verify$(RESET)."
+endif
