@@ -75,7 +75,11 @@ CONTAINERS=$(docker compose ps -a -q)
 TOTAL_CONTAINERS=0
 NOT_RUNNING_COUNT=0
 NOT_RUNNING_NAMES=""
+LIMITS_TABLE="$OUTDIR/limits_table.txt"
 {
+    # Redirect su file, non pipe: `{ ... } | tee` girerebbe in una subshell in
+    # bash e le variabili contate qui dentro (TOTAL_CONTAINERS, ecc.) andrebbero
+    # perse appena la pipe finisce, azzerando il conteggio nel riepilogo.
     printf "%-24s %-10s %-12s %-10s\n" "CONTAINER" "CPU LIMIT" "MEM LIMIT" "STATO"
     for c in $CONTAINERS; do
         NAME=$(docker inspect -f '{{.Name}}' "$c" | sed 's#^/##')
@@ -93,7 +97,8 @@ NOT_RUNNING_NAMES=""
             NOT_RUNNING_NAMES="$NOT_RUNNING_NAMES $NAME($STATE)"
         fi
     done
-} | tee -a "$SUMMARY"
+} > "$LIMITS_TABLE"
+tee -a "$SUMMARY" < "$LIMITS_TABLE"
 
 if [ "$TOTAL_CONTAINERS" -eq 0 ]; then
     add_result "Servizi Docker" "KO" "nessun container trovato (Docker non raggiungibile o stack giu')"
@@ -158,9 +163,15 @@ fi
 section "3. Tempo diretto fipav-core (dentro il container nginx, salta gateway/TLS)"
 CORE_MS="n/d"
 if docker compose exec -T nginx sh -c 'command -v wget' >/dev/null 2>&1; then
-    CORE_MS=$(docker compose exec -T nginx sh -c \
-        'start=$(date +%s%N); wget -q -O /dev/null http://localhost/ 2>/dev/null; end=$(date +%s%N); echo $(( (end-start)/1000000 ))' 2>>"$OUTDIR/core.err")
-    log "fipav-core (nginx->php-fpm), senza gateway/TLS: ${CORE_MS} ms"
+    CORE_RESULT=$(docker compose exec -T nginx sh -c \
+        'start=$(date +%s%N); wget -q -O /dev/null http://localhost/ 2>/dev/null && { end=$(date +%s%N); echo $(( (end-start)/1000000 )); } || echo FAIL' \
+        2>>"$OUTDIR/core.err")
+    if [ "$CORE_RESULT" = "FAIL" ] || [ -z "$CORE_RESULT" ]; then
+        log "richiesta a http://localhost/ (dentro nginx) fallita, non solo lenta"
+    else
+        CORE_MS="$CORE_RESULT"
+        log "fipav-core (nginx->php-fpm), senza gateway/TLS: ${CORE_MS} ms"
+    fi
 else
     log "wget non disponibile nel container nginx, salto questa misura"
 fi
@@ -171,12 +182,19 @@ add_result "fipav-core diretto (no gateway/TLS)" "$STATUS3" "${CORE_MS} ms"
 
 section "4. Tempo diretto comter (dentro il container, salta gateway/TLS)"
 COMTER_MS="n/d"
-if docker compose exec -T comter sh -c 'command -v wget' >/dev/null 2>&1; then
-    COMTER_MS=$(docker compose exec -T comter sh -c \
-        'start=$(date +%s%N); wget -q -O /dev/null http://localhost:3000/ 2>/dev/null; end=$(date +%s%N); echo $(( (end-start)/1000000 ))' 2>>"$OUTDIR/comter.err")
-    log "comter (Next.js), senza gateway/TLS: ${COMTER_MS} ms"
+# Il Dockerfile installa curl, non wget (a differenza delle immagini alpine/busybox).
+if docker compose exec -T comter sh -c 'command -v curl' >/dev/null 2>&1; then
+    COMTER_RESULT=$(docker compose exec -T comter sh -c \
+        'start=$(date +%s%N); curl -s -o /dev/null http://localhost:3000/ && { end=$(date +%s%N); echo $(( (end-start)/1000000 )); } || echo FAIL' \
+        2>>"$OUTDIR/comter.err")
+    if [ "$COMTER_RESULT" = "FAIL" ] || [ -z "$COMTER_RESULT" ]; then
+        log "richiesta a http://localhost:3000/ (dentro comter) fallita, non solo lenta"
+    else
+        COMTER_MS="$COMTER_RESULT"
+        log "comter (Next.js), senza gateway/TLS: ${COMTER_MS} ms"
+    fi
 else
-    log "wget non disponibile nel container comter, salto questa misura"
+    log "curl non disponibile nel container comter, salto questa misura"
 fi
 STATUS4=$(classify_num "$COMTER_MS" 300 1000)
 add_result "comter diretto (no gateway/TLS)" "$STATUS4" "${COMTER_MS} ms"
@@ -263,15 +281,15 @@ fi
 
 section "8. Redis (latenza PING)"
 if docker compose exec -T redis redis-cli --no-raw PING >/dev/null 2>&1; then
-    REDIS_LAT_FILE="$OUTDIR/redis_latency.txt"
-    docker compose exec -T redis redis-cli --latency -i 1 > "$REDIS_LAT_FILE" 2>/dev/null &
-    RPID=$!
-    sleep 2
-    kill "$RPID" 2>/dev/null
-    wait "$RPID" 2>/dev/null
-    tail -n 1 "$REDIS_LAT_FILE" | tee -a "$SUMMARY"
-    REDIS_AVG=$(grep -oE 'avg: [0-9.]+' "$REDIS_LAT_FILE" | tail -1 | awk '{print $2}')
-    add_result "Redis (latenza PING)" "$(classify_num "${REDIS_AVG:-n/d}" 1 10)" "avg ${REDIS_AVG:-n/d} ms"
+    # `redis-cli --latency` scrive in loop su un'unica riga con \r: se lo stdout
+    # non e' un terminale (come qui, rediretto su file) diventa bufferizzato a
+    # blocchi, e uccidendolo con kill perde tutto il buffer non ancora scritto
+    # su disco. Un singolo PING cronometrato da fuori evita il problema.
+    REDIS_AVG=$(docker compose exec -T redis sh -c \
+        'start=$(date +%s%N); redis-cli PING >/dev/null && { end=$(date +%s%N); echo $(( (end-start)/1000000 )); }' \
+        2>>"$OUTDIR/redis.err")
+    log "PING: ${REDIS_AVG:-n/d} ms"
+    add_result "Redis (latenza PING)" "$(classify_num "${REDIS_AVG:-n/d}" 5 20)" "${REDIS_AVG:-n/d} ms"
 else
     log "redis non raggiungibile"
     add_result "Redis (latenza PING)" "KO" "non raggiungibile"
