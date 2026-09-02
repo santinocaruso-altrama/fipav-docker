@@ -8,6 +8,13 @@
 # dichiarati nel compose con `name:` pinnato al volume esistente, quindi
 # `down -v` cancellerebbe il database camp2013 di lavoro. Per ripulire le
 # dipendenze dei frontend c'e' `make fe-reset`, che tocca solo quei due volumi.
+#
+# ATTENZIONE: in staging, un `docker compose up -d comter` (o backoffice)
+# lanciato a mano SENZA `-f docker-compose.staging.yml` ricrea il container
+# con la definizione del file base: comter torna a girare `next dev` invece
+# che la build di produzione, pubblicamente. Su una macchina di staging usa
+# sempre `make` (i target qui sotto applicano l'overlay da soli tramite
+# $(FE_COMPOSE)/$(STAGING)), oppure `docker compose $(STAGING) ...` a mano.
 
 .PHONY: help \
        up down up-staging down-staging build rebuild restart ps logs \
@@ -246,7 +253,7 @@ update: pull ## git pull sui tre progetti + composer, migrazioni e riavvio front
 	docker compose exec php php artisan config:clear; \
 	docker compose exec php php artisan route:clear; \
 	echo "$(CYAN)Riavvio dei frontend...$(RESET)"; \
-	docker compose restart backoffice comter; \
+	docker compose $(FE_COMPOSE) restart backoffice comter; \
 	echo ""; \
 	echo "$(GREEN)Aggiornato.$(RESET) Gli entrypoint reinstallano le dipendenze solo se il"; \
 	echo "  lockfile e' cambiato; in quel caso l'install e' in corso adesso:"; \
