@@ -48,6 +48,20 @@ RUN echo "xdebug.mode=debug" >> /usr/local/etc/php/conf.d/docker-php-ext-xdebug.
     && echo "xdebug.log=/tmp/xdebug.log" >> /usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini \
     && echo "xdebug.idekey=VSCODE" >> /usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini
 
+# Tuning di OPcache: e' gia' abilitato di default da PHP, ma con i default
+# generici (128 MB, 10000 file). fipav-core da solo conta 9587 file .php: al
+# primo margine di crescita (una dipendenza composer in piu') si supera il
+# tetto e opcache ricomincia a invalidare/ricompilare invece di servire dalla
+# cache, vanificando il vantaggio. `validate_timestamps` resta On (default):
+# il sorgente arriva da bind mount e `make update` fa git pull senza
+# riavviare php-fpm, quindi serve che opcache si accorga dei file cambiati
+# senza un restart esplicito del container.
+RUN { \
+        echo "opcache.memory_consumption=256"; \
+        echo "opcache.interned_strings_buffer=16"; \
+        echo "opcache.max_accelerated_files=20000"; \
+    } > /usr/local/etc/php/conf.d/zz-opcache-tuning.ini
+
 # Install Composer
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 

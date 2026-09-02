@@ -93,6 +93,35 @@ services:
     networks:
       - fipav-network
 
+  # Worker delle code (QUEUE_CONNECTION=redis). Senza questo servizio nessun
+  # processo consuma le code: i job restano accodati su Redis all'infinito,
+  # in silenzio (nessun errore, nessun log - si scopre solo controllando
+  # Redis a mano). Stessa immagine di `php`: Horizon e' un comando Artisan,
+  # non serve un'immagine diversa, solo un CMD diverso.
+  horizon:
+    build:
+      context: ./docker/php
+      dockerfile: Dockerfile
+    container_name: fipav-horizon
+    command: php artisan horizon
+    restart: unless-stopped
+    volumes:
+      - ../fipav-core/src:/var/www/html
+    environment:
+      TZ: Europe/Rome
+      APP_URL: "${CORE_APP_URL:-http://localhost/core}"
+      ASSET_URL: "${CORE_ASSET_URL:-/core}"
+      # Un worker in background non serve mai un IDE in ascolto: a differenza
+      # di `php` qui non c'e' override per XDEBUG_MODE, resta sempre off.
+      XDEBUG_MODE: "off"
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - fipav-network
+
   nginx:
     image: nginx:alpine
     container_name: fipav-nginx

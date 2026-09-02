@@ -18,7 +18,7 @@
 
 .PHONY: help \
        up down up-staging down-staging build rebuild restart ps logs \
-       logs-gateway logs-php logs-backoffice logs-comter logs-fe \
+       logs-gateway logs-php logs-horizon logs-backoffice logs-comter logs-fe \
        install verify diagnose update pull \
        shell sh-backoffice sh-comter \
        artisan composer tinker mariadb redis-cli \
@@ -196,6 +196,9 @@ logs-gateway: ## Log del gateway Caddy (routing e certificati)
 logs-php: ## Log di php-fpm (fipav-core)
 	docker compose logs -f php
 
+logs-horizon: ## Log del worker delle code (Horizon)
+	docker compose logs -f horizon
+
 logs-backoffice: ## Log del dev server Vite
 	docker compose logs -f backoffice
 
@@ -252,6 +255,8 @@ update: pull ## git pull sui tre progetti + composer, migrazioni e riavvio front
 	echo "$(CYAN)Cache di Laravel...$(RESET)"; \
 	docker compose exec php php artisan config:clear; \
 	docker compose exec php php artisan route:clear; \
+	echo "$(CYAN)Riavvio del worker delle code...$(RESET)"; \
+	docker compose exec horizon php artisan horizon:terminate; \
 	echo "$(CYAN)Riavvio dei frontend...$(RESET)"; \
 	docker compose $(FE_COMPOSE) restart backoffice comter; \
 	echo ""; \
