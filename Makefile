@@ -239,6 +239,24 @@ pull: ## Solo git pull sui tre progetti, senza toccare i container
 	    else printf "$(RED)pull fallito$(RESET) (divergenza? serve un merge a mano)\n"; fi; \
 	  fi; \
 	done
+	@# git-version.json per /core/version (VersionController): generato qui,
+	@# non da un comando artisan, perche' .git sta nella root di fipav-core, un
+	@# livello sopra src/ (l'unica parte bind-mountata nel container php) - da
+	@# dentro il container .git e' irraggiungibile. deployed_at e' il momento di
+	@# questo `make pull`/`make update`, non la data del commit: e' quello che
+	@# risponde a "quando e' stato pubblicato", i due possono differire (un
+	@# commit vecchio pullato solo ora).
+	@if [ -d ../fipav-core/.git ]; then \
+	  COMMIT=$$(git -C ../fipav-core rev-parse --short HEAD 2>/dev/null || echo unknown); \
+	  COMMIT_FULL=$$(git -C ../fipav-core rev-parse HEAD 2>/dev/null || echo unknown); \
+	  BRANCH=$$(git -C ../fipav-core rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown); \
+	  TAG=$$(git -C ../fipav-core describe --tags --always 2>/dev/null || echo none); \
+	  COMMIT_DATE=$$(git -C ../fipav-core log -1 --format=%cI 2>/dev/null || echo unknown); \
+	  DEPLOYED_AT=$$(date +"%Y-%m-%dT%H:%M:%S%z"); \
+	  printf '{\n  "commit": "%s",\n  "commit_full": "%s",\n  "branch": "%s",\n  "tag": "%s",\n  "commit_date": "%s",\n  "deployed_at": "%s"\n}\n' \
+	    "$$COMMIT" "$$COMMIT_FULL" "$$BRANCH" "$$TAG" "$$COMMIT_DATE" "$$DEPLOYED_AT" \
+	    > ../fipav-core/src/git-version.json; \
+	fi
 
 update: pull ## git pull sui tre progetti + composer, migrazioni e riavvio frontend
 	@if [ -z "$$(docker compose ps -q php)" ]; then \
