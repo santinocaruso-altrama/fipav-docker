@@ -96,6 +96,24 @@
 			}
 			respond @dotfiles 403
 
+			# GUARDIA DI SICUREZZA, seconda linea di difesa. Il gate applicativo
+			# (HorizonServiceProvider::gate()) controlla gia' l'IP, ma il
+			# pacchetto Horizon lo bypassa comunque quando APP_ENV=local -
+			# comportamento del pacchetto stesso (HorizonApplicationServiceProvider
+			# ->authorize(): `environment('local') || Gate::check(...)`), non un
+			# bug applicativo. Finche' quella variabile resta com'e' su questa
+			# macchina, bloccare qui e' l'unica cosa che impedisce a chiunque
+			# conosca l'URL di aprire la dashboard delle code.
+			#
+			# Il default (var non impostata) e' permissivo apposta: in locale
+			# HORIZON_ALLOWED_IPS non e' definita, e uno sviluppatore deve poter
+			# aprire /horizon senza configurare nulla.
+			@horizonUnauthorized {
+				path /horizon /horizon/*
+				not remote_ip {$HORIZON_ALLOWED_IPS}
+			}
+			respond @horizonUnauthorized 403
+
 			# Snapshot statici del live score, rigenerati a evento da
 			# App\Services\LiveScoreSnapshot.
 			#
