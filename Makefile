@@ -218,7 +218,7 @@ install: ## Setup iniziale completo (build, up, composer install, migrate)
 	@echo "$(CYAN)Dipendenze PHP...$(RESET)"
 	docker compose exec php composer install
 	@echo "$(CYAN)Migrazioni...$(RESET)"
-	docker compose exec php php artisan migrate
+	docker compose exec php php artisan migrate --force
 	@echo ""
 	@echo "$(GREEN)Setup completato.$(RESET) I frontend potrebbero essere ancora in install:"
 	@echo "  $(CYAN)make logs-fe$(RESET) per seguirli, poi $(CYAN)make verify$(RESET)"
@@ -269,7 +269,13 @@ update: pull ## git pull sui tre progetti + composer, migrazioni e riavvio front
 	echo "$(CYAN)Dipendenze PHP...$(RESET)"; \
 	docker compose exec php composer install; \
 	echo "$(CYAN)Migrazioni...$(RESET)"; \
-	docker compose exec php php artisan migrate; \
+	# --force: con APP_ENV=production Laravel chiede conferma interattiva \
+	# (Application In Production), che qui non puo' arrivare - gira senza \
+	# terminale attaccato. Senza, il comando si annulla da solo con un WARN \
+	# in mezzo all'output, non un errore: passava inosservato, le \
+	# migrazioni non giravano piu' da quando questa macchina e' passata a \
+	# APP_ENV=production. \
+	docker compose exec php php artisan migrate --force; \
 	echo "$(CYAN)Cache di Laravel...$(RESET)"; \
 	docker compose exec php php artisan config:clear; \
 	docker compose exec php php artisan route:clear; \
