@@ -33,12 +33,20 @@ fi
 
 # La cache di build di Next vive nel bind mount: se contiene artefatti prodotti
 # su macOS, il dev server in linux fallisce con errori di modulo non trovato.
+#
+# Il marker va scritto SUBITO, prima della build, non solo dentro il ramo che
+# cancella la cache: altrimenti al primo avvio in container `next build` la
+# popola senza lasciare il marker, e al riavvio successivo lo script la
+# scambia per cache "esterna" e la ributta via. Risultato pratico: ogni
+# `make update` ripartiva da una build fredda, cache API compresa (la fetch
+# cache di Next, sotto .next/cache, e' la stessa cosa che tiene in cache le
+# chiamate al CMS fatte con `next: { revalidate }` in src/lib/api.ts).
 if [ -d .next ] && [ ! -f .next/.docker-built ]; then
     echo "[comter] Cache .next creata fuori dal container: la rimuovo."
     rm -rf .next
-    mkdir -p .next
-    touch .next/.docker-built
 fi
+mkdir -p .next
+touch .next/.docker-built
 
 echo "[comter] Avvio: $*"
 exec "$@"
