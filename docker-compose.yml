@@ -66,6 +66,16 @@ services:
       context: ./docker/php
       dockerfile: Dockerfile
     container_name: fipav-php
+    # Senza questo, il container (e ogni `docker compose exec php ...` lanciato
+    # a mano: composer, artisan) gira come root di default - solo i worker che
+    # servono le richieste HTTP vere girano come www-data (da www.conf). I file
+    # scritti da un comando manuale finiscono root-owned, e www-data non puo'
+    # piu' riscriverli: e' cosi' che storage/framework/views si e' rotto in
+    # staging (tempnam(): file created in the system's temporary directory,
+    # ogni vista mai compilata prima falliva). Con `user: www-data` qui, tutto
+    # cio' che tocca questo container - server o comando manuale - scrive
+    # sempre con lo stesso utente, quindi il problema non si ripresenta.
+    user: www-data
     volumes:
       - ../fipav-core/src:/var/www/html
     environment:
@@ -105,6 +115,9 @@ services:
     container_name: fipav-horizon
     command: php artisan horizon
     restart: unless-stopped
+    # Stesso motivo del servizio `php`: gira sempre come www-data, coerente
+    # con chi possiede storage/ e bootstrap/cache dopo il fix dei permessi.
+    user: www-data
     volumes:
       - ../fipav-core/src:/var/www/html
     environment:
