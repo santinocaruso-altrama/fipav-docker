@@ -96,23 +96,25 @@
 			}
 			respond @dotfiles 403
 
-			# GUARDIA DI SICUREZZA, seconda linea di difesa. Il gate applicativo
-			# (HorizonServiceProvider::gate()) controlla gia' l'IP, ma il
-			# pacchetto Horizon lo bypassa comunque quando APP_ENV=local -
-			# comportamento del pacchetto stesso (HorizonApplicationServiceProvider
-			# ->authorize(): `environment('local') || Gate::check(...)`), non un
-			# bug applicativo. Finche' quella variabile resta com'e' su questa
-			# macchina, bloccare qui e' l'unica cosa che impedisce a chiunque
-			# conosca l'URL di aprire la dashboard delle code.
+			# GUARDIA DI SICUREZZA per la dashboard delle code. Il gate
+			# applicativo (HorizonServiceProvider::gate()) non basta da solo:
+			# il pacchetto Horizon bypassa qualunque gate quando
+			# APP_ENV=local (comportamento del pacchetto stesso,
+			# HorizonApplicationServiceProvider->authorize(): "environment
+			# ('local') || Gate::check(...)"), e questa macchina puo' avere
+			# quella variabile cambiata in futuro senza che nessuno colleghi
+			# il collegamento con l'esposizione della dashboard.
 			#
-			# Il default (var non impostata) e' permissivo apposta: in locale
-			# HORIZON_ALLOWED_IPS non e' definita, e uno sviluppatore deve poter
-			# aprire /horizon senza configurare nulla.
-			@horizonUnauthorized {
-				path /horizon /horizon/*
-				not remote_ip {$HORIZON_ALLOWED_IPS}
+			# Non e' un blocco per IP: questo host gira Docker in modalita'
+			# rootless (RootlessKit gestisce il port-forwarding in userspace)
+			# e non preserva l'indirizzo del client - ogni richiesta pubblica
+			# arriva a Caddy con l'IP del gateway della rete Docker, mai
+			# quello reale. Un `remote_ip` qui bloccherebbe chiunque,
+			# incluso chi dovrebbe entrare. Basic Auth non ha questo
+			# problema: non dipende dall'IP.
+			basicauth /horizon* {
+				{$HORIZON_BASIC_AUTH_USER} {$HORIZON_BASIC_AUTH_HASH}
 			}
-			respond @horizonUnauthorized 403
 
 			# Snapshot statici del live score, rigenerati a evento da
 			# App\Services\LiveScoreSnapshot.

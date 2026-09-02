@@ -53,20 +53,16 @@ services:
       # ricava da se' che deve emettere i certificati e reindirizzare a https.
       GATEWAY_SITES: "${GATEWAY_SITES:-http://}"
       ACME_CA: "${ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}"
-      # IP autorizzati a /core/horizon, separati da SPAZIO (sintassi Caddy
-      # remote_ip) - non da virgola come l'omonima variabile in fipav-core/
-      # src/.env (quella e' per il gate applicativo, letta da PHP, formato
-      # diverso). Vanno tenute sincronizzate a mano: sono due guardie
-      # indipendenti sullo stesso elenco di IP, non la stessa lettura.
-      #
-      # Default permissivo (0.0.0.0/0 ::/0, cioe' "qualunque IP") apposta: in
-      # locale questa variabile non e' definita, e uno sviluppatore deve poter
-      # aprire /horizon senza configurare nulla. Il valore arriva sempre
-      # valorizzato al container, mai vuoto: `remote_ip` senza argomenti e' un
-      # errore di sintassi Caddy, quindi il default vive qui e non nel
-      # Caddyfile (li' `{$VAR:default}` scatterebbe solo se la variabile fosse
-      # assente, non se fosse vuota).
-      HORIZON_ALLOWED_IPS: "${HORIZON_ALLOWED_IPS:-0.0.0.0/0 ::/0}"
+      # Basic Auth per /core/horizon (vedi Caddyfile). Non un blocco per IP:
+      # questo host gira Docker rootless, il client reale non arriva mai a
+      # Caddy (vedi commento nel Caddyfile). Default dev/dev in locale, cosi'
+      # uno sviluppatore apre /horizon senza configurare nulla; in staging va
+      # sempre sovrascritto nel .env della macchina. L'hash e' bcrypt (`docker
+      # compose exec gateway caddy hash-password --plaintext 'la-password'`),
+      # mai la password in chiaro. I `$` vanno raddoppiati qui perche' Compose
+      # userebbe altrimenti `$2a` ecc. come proprie variabili da interpolare.
+      HORIZON_BASIC_AUTH_USER: "${HORIZON_BASIC_AUTH_USER:-dev}"
+      HORIZON_BASIC_AUTH_HASH: "${HORIZON_BASIC_AUTH_HASH:-$$2a$$14$$YEXcKLvdfMi/qhvCLpdECe2hvamqmVCBOi1gdIyfD7UHX4l2wzBFK}"
     depends_on:
       - php
       - backoffice
