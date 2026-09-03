@@ -69,7 +69,12 @@ COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 WORKDIR /var/www/html
 
 # Set permissions
-RUN chown -R www-data:www-data /var/www/html
+# /var/www/.composer non e' un bind mount come html: senza questo, resta di
+# proprieta' di root (ereditato dall'immagine base) e `composer install`, che
+# gira sempre come www-data (vedi `user: www-data` in docker-compose.yml), non
+# puo' scriverci la cache - fallisce silenziosamente con un warning e basta.
+RUN mkdir -p /var/www/.composer/cache \
+    && chown -R www-data:www-data /var/www/.composer /var/www/html
 
 # Set timezone inside the image (Debian-based)
 ENV TZ=Europe/Rome
