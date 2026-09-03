@@ -279,6 +279,7 @@ update: pull ## git pull sui tre progetti + composer, migrazioni e riavvio front
 	echo "$(CYAN)Cache di Laravel...$(RESET)"; \
 	docker compose exec php php artisan config:clear; \
 	docker compose exec php php artisan route:clear; \
+	docker compose exec php php artisan cache:clear; \
 	echo "$(CYAN)Riavvio del worker delle code...$(RESET)"; \
 	docker compose exec horizon php artisan horizon:terminate; \
 	echo "$(CYAN)Riavvio dei frontend...$(RESET)"; \
