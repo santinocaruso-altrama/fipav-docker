@@ -148,6 +148,10 @@
 			# crop/resize), cosa che un <img> cross-origin non permetterebbe.
 			@storage path /storage/*
 			header @storage Access-Control-Allow-Origin *
+			# Stesso path puo' essere sovrascritto da un nuovo upload: TTL
+			# prudente (1 giorno) invece di immutable, con revalidation via
+			# ETag/Last-Modified (emessi da file_server) entro la finestra.
+			header @storage Cache-Control "public, max-age=86400, stale-while-revalidate=604800"
 
 			# SCRIPT_NAME e' il punto chiave di tutta questa configurazione. Da
 			# /core/index.php Symfony ricava baseUrl=/core e pathInfo=/api/...:
