@@ -5,12 +5,34 @@
 .superpowers/
 
 # Configurazione locale: porte, URL e XDEBUG_MODE cambiano da macchina a
-# macchina. Il template versionato e' .env.example, da copiare al primo setup.
+# macchina. Il template versionato e' .env.example, da copiare in .env.dev
+# e/o .env.stage al primo setup. .env resta ignorato per sicurezza anche se
+# non piu' letto da nessun target: meglio che un vecchio file locale finisca
+# ignorato per errore che tracciato per errore.
 .env
+.env.dev
+.env.stage
 
-# Dump prodotti da `make db-dump`, che scrive nella root del progetto.
-# Solo la root: docker/mysql/init.sql deve restare tracciato.
+# Dump prodotti da `make db-backups`, che scrive nella root del progetto.
 /*.sql
 
-# Report prodotti da `make diagnose` (docker/diagnose.sh).
+# Backup schedulati da scripts/backup-db.sh (compressi, con la propria
+# rotazione: vedi BACKUP_RETENTION_DAYS nello script).
+/backups/
+
+# Report prodotti da `make diagnose` (scripts/diagnose.sh).
 /diagnose-*/
+
+# Generato da scripts/sync-sites.sh dai comitati attivi in DB (solo staging).
+# `make up-stage` lo rigenera da zero se manca: non serve un placeholder.
+/docker/gateway/stage/sites.conf
+
+# Credenziali SMTP di Mailpit (solo staging): contiene un hash bcrypt.
+# Generato da `make up-stage` da HORIZON_BASIC_AUTH_USER/HASH, come
+# sites.conf - non serve un placeholder, ne' scriverlo a mano.
+/docker/mailpit/smtp-auth
+
+# Configurazione locale di scripts/sync-storage.sh: contiene l'hostname SSH
+# reale della macchina di staging. Il template versionato e'
+# rsync.yaml.example.
+/scripts/rsync.yaml

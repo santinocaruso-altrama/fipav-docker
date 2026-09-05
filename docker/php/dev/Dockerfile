@@ -1,3 +1,6 @@
+# Immagine di sviluppo per fipav-core (Laravel): identica a
+# docker/php/stage/Dockerfile tranne per Xdebug, installato solo qui - vedi
+# il commento piu' sotto sul perche' non serve in staging.
 FROM php:8.4-fpm
 
 # Install system dependencies
@@ -37,7 +40,10 @@ RUN docker-php-ext-configure gd --with-freetype --with-jpeg --with-webp --with-a
         intl \
         opcache
 
-# Install Redis and Xdebug extensions via pecl
+# Install Redis and Xdebug extensions via pecl. Xdebug solo qui: in staging
+# (docker/php/stage/Dockerfile) non e' nemmeno installato, non solo spento a
+# runtime - un'estensione in meno da caricare, un'immagine piu' piccola, una
+# build piu' veloce.
 RUN pecl install redis xdebug && docker-php-ext-enable redis xdebug
 
 # Configure Xdebug
@@ -48,18 +54,19 @@ RUN echo "xdebug.mode=debug" >> /usr/local/etc/php/conf.d/docker-php-ext-xdebug.
     && echo "xdebug.log=/tmp/xdebug.log" >> /usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini \
     && echo "xdebug.idekey=VSCODE" >> /usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini
 
-# Tuning di OPcache: e' gia' abilitato di default da PHP, ma con i default
-# generici (128 MB, 10000 file). fipav-core da solo conta 9587 file .php: al
-# primo margine di crescita (una dipendenza composer in piu') si supera il
-# tetto e opcache ricomincia a invalidare/ricompilare invece di servire dalla
-# cache, vanificando il vantaggio. `validate_timestamps` resta On (default):
-# il sorgente arriva da bind mount e `make update` fa git pull senza
-# riavviare php-fpm, quindi serve che opcache si accorga dei file cambiati
-# senza un restart esplicito del container.
+# Tuning di OPcache, molto piu' leggero di docker/php/stage/Dockerfile: li'
+# serve evitare invalidazioni sotto traffico reale (vedi il commento in
+# quel file), qui no. Un solo sviluppatore, richieste manuali, e
+# `validate_timestamps` resta comunque On (default) perche' il sorgente
+# arriva da bind mount e `make update` fa git pull senza riavviare php-fpm -
+# quindi la cache si invalida e ricompila da sola a ogni modifica ANCHE con
+# questi valori piu' bassi. Riservare 256 MB su un laptop condiviso con
+# altri programmi per un vantaggio che qui non si sente sarebbe solo un
+# costo.
 RUN { \
-        echo "opcache.memory_consumption=256"; \
-        echo "opcache.interned_strings_buffer=16"; \
-        echo "opcache.max_accelerated_files=20000"; \
+        echo "opcache.memory_consumption=64"; \
+        echo "opcache.interned_strings_buffer=8"; \
+        echo "opcache.max_accelerated_files=10000"; \
     } > /usr/local/etc/php/conf.d/zz-opcache-tuning.ini
 
 # Install Composer

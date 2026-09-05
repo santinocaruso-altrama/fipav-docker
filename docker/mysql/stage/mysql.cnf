@@ -1,0 +1,12 @@
+# Tuning solo per staging: montato da docker-compose.stage.yml in
+# /etc/mysql/conf.d/, che MariaDB legge in aggiunta ai default dell'immagine.
+
+[mysqld]
+
+# pure - indicativamente 60-70% della RAM del container/host dedicata al DB.
+innodb_buffer_pool_size = 4512M
+innodb_log_file_size = 512M
+innodb_flush_log_at_trx_commit = 2
+slow_query_log = 1
+slow_query_log_file = /var/lib/mysql/mariadb-slow.log
+long_query_time = 1

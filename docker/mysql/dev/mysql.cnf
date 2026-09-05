@@ -1,0 +1,22 @@
+# Tuning solo per dev: montato da docker-compose.dev.yml in
+# /etc/mysql/conf.d/, che MariaDB legge in aggiunta ai default dell'immagine.
+# Speculare a docker/mysql/stage/mysql.cnf, ma scalato per un laptop
+# condiviso con altri programmi, non una macchina dedicata.
+[mysqld]
+
+# Piccolo apposta: uno sviluppatore non deve riservare centinaia di MB al DB
+# solo per farlo partire. Se il dataset locale cresce e MariaDB rallenta,
+# alzalo - qui non c'e' nessun altro carico da rispettare.
+innodb_buffer_pool_size = 128M
+
+# Velocita' sopra la durabilita': i dati locali sono ricreabili da un dump
+# (`make db-restore`), non serve fsync a ogni commit. Stessa nota di
+# stage/mysql.cnf: NON e' un default da portare in produzione, dove quel
+# secondo di transazioni perse in un crash può essere un referto gara.
+innodb_flush_log_at_trx_commit = 2
+
+# Query lente visibili anche in locale: comodo scoprire un N+1 prima che
+# arrivi in staging con più dati e più utenti.
+slow_query_log = 1
+slow_query_log_file = /var/lib/mysql/mariadb-slow.log
+long_query_time = 1

@@ -9,7 +9,6 @@ entrypoint HTTP sulla porta 80.
 | `http://localhost/core/` | `fipav-core` | API e backend (Laravel) |
 | `http://localhost/core/api/documentation` | `fipav-core` | Swagger UI |
 | `http://localhost/backoffice/` | `fipav-backoffice` | backoffice (Vite + React) |
-| `http://localhost:8080/` | `fipav-core` | accesso legacy, API sulla root |
 | `http://localhost:8025` | mailpit | mail catturate in sviluppo |
 | `http://localhost:7700` | meilisearch | motore di ricerca |
 
@@ -31,18 +30,26 @@ fipavonline/
 Il `docker-compose.yml` li referenzia con percorsi relativi (`../fipav-core/src`), quindi
 i comandi vanno dati **da questa directory** e il layout non è negoziabile.
 
-## Avvio
+## Avvio (sviluppo locale)
+
+**Solo la prima volta:**
 
 ```sh
-cp .env.example .env     # solo la prima volta
-make install             # build immagini, avvio, composer install, migrazioni
+cp .env.example .env.dev
 ```
 
-Poi, nell'uso quotidiano:
+Il default va bene così com'è: nessun dato da generare per lo sviluppo locale (a
+differenza dello staging, vedi più sotto). Poi:
 
 ```sh
-make up                  # avvia
-make down                # ferma
+make install             # build immagini, avvio, composer install, migrazioni, storage:link
+```
+
+Nell'uso quotidiano, da quel momento in poi:
+
+```sh
+make up                  # avvia (alias di `make up-dev`)
+make down                # ferma (alias di `make down-dev`)
 make                     # elenca tutti i comandi
 ```
 
@@ -67,8 +74,8 @@ make verify
 
 Esegue i criteri di accettazione della spec: che i tre path rispondano, che gli asset di
 Swagger escano col prefisso `/core/` (è la prova che l'override di `SCRIPT_NAME` funziona),
-che l'accesso legacy su `:8080` sia intatto, che il multi-tenant per sottodominio risponda
-e che il database sia quello preesistente e non un volume ricreato vuoto.
+che il multi-tenant per sottodominio risponda e che il database sia quello preesistente e
+non un volume ricreato vuoto.
 
 L'HMR è l'unico criterio che resta manuale: modifica un file in
 `../fipav-backoffice/src` e controlla che il browser si aggiorni senza reload.
@@ -79,13 +86,15 @@ L'HMR è l'unico criterio che resta manuale: modifica un file in
 
 | | |
 | --- | --- |
-| **ciclo di vita** | `up` `down` `build` `rebuild` `restart` `ps` |
-| **log** | `logs` `logs-gateway` `logs-php` `logs-backoffice` `logs-comter` `logs-fe` |
+| **primo avvio** | `install` |
+| **ciclo di vita (dev)** | `up`/`up-dev` `down`/`down-dev` `build` `rebuild` `restart` `ps` |
+| **ciclo di vita (staging)** | `up-stage` `down-stage` `sync-sites` |
+| **log** | `logs` `logs-gateway` `logs-php` `logs-horizon` `logs-backoffice` `logs-comter` `logs-fe` |
 | **aggiornamento** | `pull` `update` |
-| **verifica** | `verify` |
+| **verifica / diagnostica** | `verify` `diagnose` |
 | **shell** | `shell` `sh-backoffice` `sh-comter` |
-| **core / Laravel** | `artisan` `composer` `tinker` `migrate` `migrate-status` `seed` `fresh` `test` `swagger` `routes` `cache-clear` |
-| **database** | `mariadb` `db-dump` `db-restore` |
+| **core / Laravel** | `artisan` `composer` `tinker` `migrate` `migrate-status` `migrate-fresh` `seed` `fresh` `test` `test-filter` `swagger` `routes` `cache-clear` |
+| **database** | `mariadb` `redis-cli` `db-dump` `db-restore` `backup-db` `rotate-db-password` |
 | **dipendenze frontend** | `fe-reset` |
 
 Con parametri:
@@ -94,7 +103,7 @@ Con parametri:
 make artisan cmd="route:list --path=cms"
 make composer cmd="require league/csv"
 make test-filter f="BreadcrumbTest"
-make db-dump file=backup.sql
+make db-backups file=backup.sql
 ```
 
 ### Aggiornare il codice
@@ -111,24 +120,20 @@ make pull      # solo i tre git pull, senza toccare i container
 `pull` salta i repo con working tree sporco invece di tentare il merge, e usa `--ff-only`:
 se un branch è divergente lo segnala e si fa da parte.
 
-Nessuno dei due ricostruisce le immagini Docker: se `docker/php/Dockerfile` è cambiato serve
-`make build`. Al momento serve a chi aggiorna da prima del supporto WebP/AVIF in GD — vedi
-[Immagini: WebP e AVIF](#immagini-webp-e-avif).
+Nessuno dei due ricostruisce le immagini Docker: se `docker/php/dev/Dockerfile` (o l'equivalente
+di staging) è cambiato serve `make build`. Al momento serve a chi aggiorna da prima del supporto
+WebP/AVIF in GD — vedi [Immagini: WebP e AVIF](#immagini-webp-e-avif).
 
 ## Come è fatto
 
 ```
 host :80 / :443  (Host qualsiasi in locale; in staging gli hostname dei comitati)
     |
-fipav-gateway (Caddy)
+gateway (Caddy)
     |-- /            --> proxy   comter:3000        (Host inalterato, WebSocket per HMR)
     |-- /core/live/  --> file    public/live/*.json (statico, PHP fuori dal percorso)
     |-- /core/       --> fastcgi php:9000           (SCRIPT_NAME=/core/index.php)
     |-- /backoffice/ --> proxy   backoffice:3000    (path invariato, WebSocket per HMR)
-
-host :8080
-    |
-fipav-nginx (legacy, core sulla root) --> fastcgi php:9000
 
 rete fipav-network:  mariadb :3307   redis :6379   mailpit :8025   meilisearch :7700
 ```
@@ -154,10 +159,10 @@ modifiche a `fipav-core`, e non tutti i punti di Laravel rispettano quell'header
 
 ### Le immagini e `ASSET_URL`
 
-`comter` chiama l'API **server-side**, da dentro la rete Docker
-(`http://fipav-nginx/api/v1/public/cms`). Le risposte finiscono nell'HTML servito al browser,
-quindi ogni URL costruito sul root della request sarebbe `http://fipav-nginx/...`: un hostname
-che il browser non risolve.
+`comter` chiama l'API **server-side** (`API_BASE_URL`, di default il servizio `gateway` in
+locale, il dominio nudo in HTTPS in staging — vedi *Aggiungere un comitato* più sotto). Le
+risposte finiscono nell'HTML servito al browser, quindi ogni URL costruito sul root della
+request userebbe quello stesso hostname interno: uno che il browser non risolve.
 
 `CORE_ASSET_URL=/core` risolve il problema alla radice — è un **percorso**, non un URL, quindi
 le immagini escono come `/core/images/discipline/pallavolo.jpg`: relative alla root, senza
@@ -265,8 +270,8 @@ significherebbe pagarne la complessità senza usarne nessuna proprietà.
 **Generare gli snapshot:**
 
 ```sh
-docker exec fipav-php php artisan livescore:snapshot calabria   # un comitato
-docker exec fipav-php php artisan livescore:snapshot --all      # tutti i tenant attivi
+docker compose exec php php artisan livescore:snapshot calabria   # un comitato
+docker compose exec php php artisan livescore:snapshot --all      # tutti i tenant attivi
 ```
 
 `public/live/` è nel `.gitignore` di `fipav-core`: sono artefatti rigenerabili, come
@@ -288,49 +293,57 @@ app(LiveScoreSnapshot::class)->write($tenantSlug);
 
 ### Non far girare due stack insieme
 
-I `container_name` sono volutamente identici a quelli del compose di `fipav-core`
-(`fipav-php`, `fipav-mariadb`, …), così `docker exec fipav-php php artisan …` continua a
-funzionare come sempre. La conseguenza è che **questo compose e quello di `fipav-core` sono
-mutuamente esclusivi**: questo è l'entrypoint di riferimento, quello di `fipav-core` resta in
-repo come riferimento storico.
+I `container_name` di questo stack finiscono in `-dev` o `-stage` (`fipav-php-dev`,
+`fipav-mariadb-stage`, …), diversi da quelli del compose standalone di `fipav-core`
+(`fipav-php`, `fipav-mariadb`, senza suffisso), e anche i volumi dati sono ormai suffissati e
+separati per ambiente (`fipav-core_mariadb-data-dev`, `-stage`, entrambi diversi dal volume
+`fipav-core_mariadb-data` senza suffisso usato dal compose standalone di `fipav-core`). Non
+condividono più dati: puoi avviare questo stack e quello standalone di `fipav-core` insieme
+senza rischio di scritture concorrenti sullo stesso volume, e usano anche porte host diverse
+(quello di `fipav-core` pubblica `3307`, `8080`, `6379`, `8025`/`1025`, `7700`).
+
+Restano sulla stessa rete Docker (`fipav-network`, stesso nome in entrambi i compose — vedi il
+warning più sotto): non è un problema di dati, solo un dettaglio da sapere se usi `docker
+network inspect fipav-network` e trovi container di entrambi i progetti.
+
+Per comandi `docker exec` diretti (non tramite `make`/`docker compose exec`) usa il nome
+completo, con il suffisso dell'ambiente che hai avviato: `docker exec fipav-php-dev ...` o
+`fipav-php-stage`.
 
 Per lo stesso motivo il **`Makefile` di `fipav-core` non funziona** mentre gira questo stack:
 i suoi `docker compose exec` puntano al project `fipav-core`, che è spento. I comandi
 quotidiani sono replicati qui con gli stessi nomi.
 
-### Mai `docker compose down -v`
+### `docker compose down -v` cancella i dati di QUESTO ambiente
 
-I volumi `mariadb-data` e `meilisearch-data` sono dichiarati nel compose con `name:` pinnato
-a quelli creati da `fipav-core` (`fipav-core_mariadb-data`), così il database `camp2013` di
-lavoro viene **riusato** invece di essere ricreato vuoto.
+A differenza di prima, i volumi dati (`mariadb-data`, `meilisearch-data`, `redis-data`) non
+sono più pinnati a quelli di `fipav-core`: ogni ambiente ha i propri, dichiarati con `name:`
+suffissato (`fipav-core_mariadb-data-dev`/`-stage`, …). Non c'è più un DB `camp2013` reale
+condiviso da riusare: **al primo avvio di ciascun ambiente il DB parte vuoto**, migrazioni
+comprese (vedi `make install`). Per popolarlo con un dump reale c'è `make db-restore
+file=...`; per gli upload reali (`storage/app/public`) c'è `scripts/sync-storage.sh` (vedi più
+sotto).
 
-Il rovescio della medaglia è che `down --volumes` lo cancellerebbe. Nessun target del
-`Makefile` passa quel flag, ed è meglio non aggiungerlo. Per ripulire solo le dipendenze dei
-frontend c'è `make fe-reset`.
+`down --volumes` cancellerebbe questi volumi. Nessun target del `Makefile` passa quel flag,
+ed è meglio non aggiungerlo. Per ripulire solo le dipendenze dei frontend c'è `make fe-reset`.
 
-### I warning su volumi e rete sono attesi: non "sistemarli"
+### Il warning sulla rete è atteso: non "sistemarlo"
 
 A ogni avvio Docker Compose stampa:
 
 ```
 WARN a network with name fipav-network exists but was not created for project "fipavonline".
      Set `external: true` to use an existing network
-volume "fipav-core_mariadb-data" already exists but was created for project "fipav-core"
-     (expected "fipavonline"). Use `external: true` to use an existing volume
 ```
 
-Sono la conseguenza diretta del `name:` pinnato, e **il rimedio suggerito da Docker romperebbe
-il deploy su una macchina nuova**. Verificato:
-
-| | se il volume/la rete non esiste |
-| --- | --- |
-| `external: true` | **fallisce**: `external volume "..." not found` |
-| solo `name:` (com'è ora) | **lo crea e parte** |
-
-In locale i volumi esistono già, quindi `external: true` sembrerebbe funzionare. Al primo
-`make up-staging` su una macchina pulita, dove non esiste nulla, lo stack non partirebbe.
-La configurazione attuale copre entrambi i casi: riusa se c'è, crea se manca. I due warning
-sono il prezzo, e vanno lasciati stare.
+Perché: `fipav-network` è dichiarata con lo stesso nome sia qui (`name: fipav-network` in
+`docker-compose.yml`) sia nel compose standalone di `fipav-core`, e quest'ultimo di solito la
+crea per primo — Docker segnala che il nome non è stato creato per questo project, ma la
+riusa comunque. **Il rimedio suggerito da Docker (`external: true`) romperebbe il deploy su
+una macchina nuova**, dove la rete non esiste ancora: `external: true` fallisce con `network
+"..." not found` se manca, mentre solo `name:` (com'è ora) la crea se manca e la riusa se
+c'è. Verificato in entrambi i casi. Il warning è il prezzo di questa scelta, e va lasciato
+stare.
 
 ### Dipendenze dei frontend
 
@@ -351,34 +364,33 @@ make fe-reset    # butta i due volumi node_modules e reinstalla da zero
 ### La porta 80 è occupata
 
 `docker compose up` fallisce con `bind: address already in use` (tipicamente un Apache o un
-nginx locale). Cambia porta nel `.env`:
+nginx locale). Cambia porta nel `.env.dev`:
 
 ```sh
 GATEWAY_PORT=8000
 ```
 
-Gli URL diventano `http://localhost:8000/…`. Il `Makefile` legge il `.env`, quindi `make up`
+Gli URL diventano `http://localhost:8000/…`. Il `Makefile` legge il `.env.dev`, quindi `make up`
 e `make verify` si adeguano da soli.
 
 ## Configurazione
 
-Tutto in `.env` (copia di `.env.example`, non versionato). Le variabili passano ai container
-come variabili d'ambiente reali, che **vincono sui file `.env` dei singoli progetti** — sia in
-Laravel (Dotenv non sovrascrive quanto è già in ambiente) sia in Vite sia in Next. Per questo
-i `.env` dei tre progetti non vanno modificati: il workflow locale fuori da Docker resta
-identico a prima.
+Due file, non uno: `.env.dev` per `make up-dev`, `.env.stage` per `make up-stage` (entrambi
+copia di `.env.example`, non versionati) — così i valori di un ambiente non sporcano l'altro.
+Le variabili passano ai container come variabili d'ambiente reali, che **vincono sui file
+`.env` dei singoli progetti** — sia in Laravel (Dotenv non sovrascrive quanto è già in
+ambiente) sia in Vite sia in Next. Per questo i `.env` dei tre progetti non vanno modificati:
+il workflow locale fuori da Docker resta identico a prima.
 
 | Variabile | Default | A cosa serve |
 | --- | --- | --- |
 | `GATEWAY_PORT` | `80` | porta dell'unico entrypoint HTTP |
-| `CORE_LEGACY_PORT` | `8080` | accesso legacy a core con l'API sulla root |
 | `CORE_APP_URL` | `http://localhost/core` | URL generati da CLI (queue, mail, artisan) |
 | `CORE_ASSET_URL` | `/core` | prefisso delle immagini emesse da `asset()` |
 | `XDEBUG_MODE` | `debug` | `off` recupera parecchi ms per richiesta |
 | `BACKOFFICE_API_BASE_URL` | `http://localhost/core` | letto dal browser: same-origin, nessun CORS |
-| `COMTER_API_BASE_URL` | `http://fipav-nginx/api/v1/public/cms` | chiamate server-side, restano nella rete Docker |
-| `COMTER_ROOT_DOMAIN` | `localhost` | root domain da cui si ricava il tenant dal sottodominio |
-| `GATEWAY_SITES` | `http://` | indirizzi serviti dal gateway; un elenco di hostname attiva l'HTTPS |
+| `COMTER_API_BASE_URL` | per ambiente (vedi sopra) | chiamate server-side di apiFetch(), tenant nell'header x-tenant |
+| `COMTER_ROOT_DOMAIN` | `localhost` | root domain da cui si ricava il tenant dal sottodominio; anche il dominio con cui `sync-sites` costruisce gli hostname dei comitati in staging |
 | `HTTPS_PORT` | `443` | porta TLS, inutilizzata in locale |
 | `ACME_CA` | directory di produzione | metti quella di staging per provare senza consumare i rate limit |
 
@@ -437,16 +449,23 @@ ricordare, nessun record DNS da inserire a ogni scadenza.
      fipav-comter-frontend/
    ```
 
-Poi `cp .env.example .env` e, nel `.env` della macchina:
+**Solo la prima volta**, sulla macchina di staging:
 
 ```sh
-# Gli hostname serviti. Attiva l'HTTPS automatico.
-GATEWAY_SITES=calabria.fipav.altrama.it cosenza.fipav.altrama.it lazio.fipav.altrama.it roma.fipav.altrama.it
+cp .env.example .env.stage
+```
 
-# INDISPENSABILE: da qui comter ricava il tenant dal sottodominio. Lasciato a
-# `localhost` il confronto in src/proxy.ts non matcha, si applica il fallback e
-# OGNI hostname servirebbe il tenant `calabria`. Il sintomo e' subdolo: calabria
-# funziona, gli altri comitati mostrano i contenuti sbagliati.
+A differenza dello sviluppo locale, qui **tre valori vanno generati** — `make up-stage` si
+rifiuta di partire se sono rimasti sui default di sviluppo, con istruzioni su come rimediare
+se te ne dimentichi. Nel `.env.stage` della macchina:
+
+```sh
+# INDISPENSABILE, e non solo per comter: da qui comter ricava il tenant dal
+# sottodominio (lasciato a `localhost` il confronto in src/proxy.ts non
+# matcha, si applica il fallback e OGNI hostname servirebbe il tenant
+# `calabria` - il sintomo e' subdolo, calabria funziona, gli altri comitati
+# mostrano i contenuti sbagliati), ED e' il dominio con cui `make sync-sites`
+# costruisce gli hostname dei comitati per il gateway.
 COMTER_ROOT_DOMAIN=fipav.altrama.it
 
 # Un percorso, non un URL: axios lo usa come baseURL relativo, quindi le
@@ -458,56 +477,90 @@ BACKOFFICE_API_BASE_URL=/core
 # Laravel deduce il base URL dalla request.
 CORE_APP_URL=https://calabria.fipav.altrama.it/core
 
-MARIADB_ROOT_PASSWORD=<qualcosa che non sia root>
+# ─── I tre valori da GENERARE, non da scrivere a mano ────────────
+MARIADB_ROOT_PASSWORD=<qualcosa che non sia "root">
+
+# Almeno 16 byte, o Meilisearch si rifiuta di partire in MEILI_ENV=production:
+MEILI_MASTER_KEY=<generata con: openssl rand -base64 24>
+
+# Basic Auth di /core/horizon - la STESSA credenziale protegge anche l'SMTP
+# di Mailpit (vedi più sotto), non è solo per Horizon:
+HORIZON_BASIC_AUTH_USER=fipav
+HORIZON_BASIC_AUTH_HASH=<generato con: docker run --rm caddy:alpine caddy hash-password --plaintext 'una-password'>
 ```
 
 ```sh
-make build && make up-staging
+make build && make up-stage
 ```
 
-Caddy ottiene i certificati al primo avvio e reindirizza http a https. `make up-staging` si
-rifiuta di partire se `GATEWAY_SITES` è ancora `http://`, per non ritrovarsi una macchina
-pubblica che serve in chiaro senza accorgersene.
+`make up-stage` fa da solo il resto del lavoro che di solito richiederebbe passaggi manuali:
+
+1. Controlla i tre valori generati sopra, e si ferma con istruzioni se sono rimasti sui default.
+2. Porta su `mariadb`, legge i comitati con `attivo = 1` dalla tabella `tenants`
+   (`scripts/sync-sites.sh`, vedi *Aggiungere un comitato* più sotto) e scrive
+   `docker/gateway/stage/sites.conf` — un blocco per hostname, letto da Caddy al suo primo
+   avvio.
+3. Scrive `docker/mailpit/smtp-auth` dalla stessa coppia `HORIZON_BASIC_AUTH_USER`/`HASH` di
+   sopra: non è un quarto valore da generare, è derivato da quello che hai già messo.
+4. Costruisce (se serve) e avvia tutto il resto: `php`, `horizon`, `mariadb`, `redis`,
+   `mailpit`, `meilisearch`, i frontend (build multi-stage dentro l'immagine — vedi più sotto),
+   il gateway.
+
+Se in quel momento non ci sono ancora comitati attivi (macchina nuova, dati non ancora
+importati) lo stack parte comunque, semplicemente senza hostname da servire finché non lanci
+`make sync-sites` a dati importati (`make db-restore` per importare un dump, o
+`scripts/sync-storage.sh` per gli upload — vedi *Dipendenze dei frontend* e i comandi database più
+sotto).
 
 Al primo giro conviene mettere `ACME_CA` sulla directory di staging di Let's Encrypt (è
 commentata in `.env.example`): i certificati non sono validi per i browser, ma se qualcosa non
 va non si consumano i rate limit, che sono 5 certificati a settimana per set di nomi. Quando
 funziona, si rimette la riga di produzione e si riavvia.
 
-L'overlay `docker-compose.staging.yml` fa anche il resto del lavoro che una macchina pubblica
-richiede: **chiude tutte le porte tranne 80 e 443** — MariaDB, Redis, Mailpit, Meilisearch e
-l'accesso legacy `:8080`, che altrimenti sarebbe un secondo ingresso all'API in chiaro,
-scavalcando il gateway — e spegne Xdebug. I servizi continuano a girare, raggiungibili solo
-dalla rete Docker.
+L'overlay `docker-compose.stage.yml` fa anche il resto del lavoro che una macchina pubblica
+richiede: **chiude tutte le porte tranne 80 e 443** — MariaDB, Redis e Mailpit restano
+raggiungibili solo dalla rete Docker — spegne Xdebug, mette Meilisearch in
+`MEILI_ENV=production` (richiede `MEILI_MASTER_KEY` nel `.env.stage`, `make up-stage` blocca
+l'avvio se manca) e Mailpit dietro credenziali SMTP vere invece di accettarne qualunque —
+`docker/mailpit/smtp-auth` è generato da `make up-stage` da `HORIZON_BASIC_AUTH_USER`/`HASH`,
+la stessa credenziale di `/core/horizon`, non una seconda da tenere allineata a mano.
 
-### In staging i frontend sono build di produzione
+### In staging i frontend sono immagini gia' pronte, non dev server
 
-In locale girano i dev server (HMR, sorgenti bind-mountati). In staging no:
+In locale girano i dev server (HMR, sorgenti bind-mountati). In staging no: `docker build`
+compila DENTRO l'immagine (build multi-stage — `docker/backoffice/stage/Dockerfile`,
+`docker/comter/stage/Dockerfile`, context sul repo sibling, non su questa cartella), non il
+container a ogni avvio.
 
-| | locale | staging |
+| | locale (`docker/*/dev/Dockerfile`) | staging (`docker/*/stage/Dockerfile`) |
 | --- | --- | --- |
-| comter | `next dev` | `next build` + `next start` |
-| backoffice | dev server Vite | `vite build`, file statici serviti da Caddy |
+| comter | bind mount + `next dev` a ogni avvio | immagine self-contained, `next start` parte subito |
+| backoffice | bind mount + `npm run dev` a ogni avvio | build fatta una volta in `docker build`; il container in staging copia gli asset già pronti in un volume condiviso col gateway e termina |
 
 Non è una preferenza, è un requisito. Sia Vite (`server.allowedHosts`) sia Next
 (`allowedDevOrigins`) **validano l'Host in sviluppo**: con i dev server, ogni comitato nuovo
 andrebbe aggiunto anche a `vite.config.ts` e `next.config.ts`, e non sarebbe più vero che basta
-una riga nel `.env`. Quei controlli sono funzioni dei soli dev server e in produzione non
-esistono — la documentazione di Next dice esplicitamente *"during development"*.
+un dato nel DB (vedi *Aggiungere un comitato*). Quei controlli sono funzioni dei soli dev server
+e in produzione non esistono — la documentazione di Next dice esplicitamente *"during
+development"*.
 
 In più spariscono sorgenti e sourcemap esposti su una macchina pubblica, e le pagine non si
 ricompilano a ogni richiesta.
 
-Come è realizzato, senza duplicare la configurazione: il Caddyfile importa lo snippet
-dell'handler di `/backoffice/`, e la variabile `BACKOFFICE_HANDLER` sceglie **quale file**
-(`backoffice-dev.conf`, proxy al dev server, oppure `backoffice-prod.conf`, file statici).
-Resta un solo Caddyfile e la differenza sta in due file brevi e affiancati. Il container del
-backoffice in staging esegue la build e **termina**: non c'è nessun processo Node in ascolto,
-e il gateway attende che la build sia completata prima di partire.
+Come è realizzato: due Caddyfile separati (`docker/gateway/dev/Caddyfile`,
+`docker/gateway/stage/Caddyfile` — non più un solo file con una variabile che sceglie
+`backoffice.conf`), ciascuno con il proprio `backoffice.conf` affiancato. Il container del
+backoffice in staging copia gli asset (già pronti nell'immagine) in un volume e **termina**: non
+c'è nessun processo Node in ascolto, e il gateway attende che la copia sia completata prima di
+partire.
 
-Conseguenza pratica: **la prima `make up-staging` richiede qualche minuto**, perché comter
-compila prima di servire. Fino ad allora la root risponde 502. Lo stesso vale dopo ogni
-`make update`, dato che la build viene rifatta a ogni avvio del container.
+Conseguenza pratica: **il tempo di build si sposta da `make up-stage` a `make build`**. La prima
+volta serve comunque `make build && make up-stage` (la build multi-stage impiega qualche minuto
+la prima volta, poi Docker mette in cache i layer). Dopo un `git pull` che tocca i frontend, un
+`make update` da solo **non basta più a farli ripartire con il codice nuovo**: senza `--build`
+un `restart` farebbe ripartire la stessa immagine di prima — `make update` lo sa già e usa
+`up -d --build` per backoffice/comter quando rileva l'ambiente di staging (vedi il Makefile),
+ma è bene saperlo se lanci `docker compose` a mano.
 
 ### Aggiungere un comitato: cosa NON lo blocca
 
@@ -516,15 +569,15 @@ Verificato anello per anello, perché è il requisito centrale del progetto:
 | Anello | Blocca un hostname nuovo? |
 | --- | --- |
 | DNS | no, il record `A` wildcard lo copre |
-| **Caddy** | **sì, se non è in `GATEWAY_SITES`** — è l'unico punto da toccare |
+| **Caddy** | **sì, se il comitato non è `attivo` in `tenants`** — è l'unico dato da toccare |
 | Next (`next start`) | no, il controllo sull'origin è solo in sviluppo |
 | Vite (build) | no, non c'è nessun server |
 | `proxy.ts` di comter | no, ricava il tenant da qualunque sottodominio |
 | Laravel | no, il progetto non usa `TrustHosts` |
 
-Se dimentichi di aggiungerlo a `GATEWAY_SITES`, Caddy non ha un certificato per quel nome: il
-browser mostra un **errore TLS**, non un 404. È un sintomo utile, perché indica subito il `.env`
-e non un problema applicativo.
+Se un comitato non è attivo in `tenants` (o `make sync-sites` non è ancora stato rilanciato dopo
+averlo attivato), Caddy non ha un certificato per quel nome: il browser mostra un **errore TLS**,
+non un 404. È un sintomo utile, perché indica subito dove guardare e non un problema applicativo.
 
 ### Verificare che sia andata
 
@@ -545,15 +598,20 @@ porte chiuse, o un record `AAAA` che punta altrove (le CA preferiscono IPv6 quan
 ### Aggiungere un comitato
 
 ```sh
-# .env
-GATEWAY_SITES=… sicilia.fipav.altrama.it
+make sync-sites
 ```
 
-```sh
-make up-staging
-```
+Legge i comitati con `attivo = 1` dalla tabella `tenants` (la stessa che `IdentifyTenant` usa per
+risolvere il tenant a runtime — vedi
+`fipav-core/src/app/Http/Middleware/IdentifyTenant.php`), rigenera
+`docker/gateway/stage/sites.conf` (un blocco `hostname.dominio { import site }` per comitato
+attivo) e, solo se il file è cambiato, ricarica la configurazione di Caddy — nessun container
+ricreato, nessuna connessione esistente interrotta. Non parla ACME di persona: si limita a dire a
+Caddy quali hostname servire, e lui ottiene da sé il certificato per quelli nuovi
+(`make logs-gateway` per seguirlo).
 
-Il DNS non si tocca: il wildcard copre già il nuovo hostname.
+Non c'è nessun `.env` da toccare: la lista non è più una variabile, vive nel file generato. Il DNS
+non si tocca nemmeno lui: il wildcard copre già il nuovo hostname.
 
 ### Prima di ogni deploy: `make verify`
 

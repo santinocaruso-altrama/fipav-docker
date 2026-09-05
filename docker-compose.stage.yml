@@ -1,0 +1,126 @@
+# Overlay per la macchina pubblica di staging. Va usato SEMPRE insieme al
+# compose base, mai da solo:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.stage.yml up -d
+#
+# oppure `make up-stage`
+
+services:
+  php:
+    container_name: fipav-php-stage
+    build:
+      context: ./docker/php/stage
+
+  horizon:
+    container_name: fipav-horizon-stage
+    build:
+      context: ./docker/php/stage
+
+  # ─── Frontend: build multi-stage DENTRO l'immagine ───────────────
+  #
+  # Il context e' il repo sibling (fipav-comter-frontend/fipav-backoffice),
+  # non una cartella di questo repo: e' li' che vive il sorgente da
+  # copiare durante il build. Il Dockerfile resta in docker/comter/stage e
+  # docker/backoffice/stage - il path e' relativo al CONTEXT, non a questo
+  # file, per questo risale con ../fipav-docker.
+  comter:
+    container_name: fipav-comter-stage
+    build:
+      context: ../fipav-comter-frontend
+      dockerfile: ../fipav-docker/docker/comter/stage/Dockerfile
+    # Nessun bind mount, nessun volume node_modules: l'immagine e'
+    # self-contained (vedi docker/comter/stage/Dockerfile). Il container si
+    # ricrea per deployare codice nuovo - serve un `make build` prima.
+    volumes: !reset []
+
+  backoffice:
+    container_name: fipav-backoffice-stage
+    build:
+      context: ../fipav-backoffice
+      dockerfile: ../fipav-docker/docker/backoffice/stage/Dockerfile
+    # Sostituisce bind mount + volume node_modules della base: l'unico
+    # volume che resta e' quello condiviso col gateway, dove il container
+    # copia gli asset gia' pronti (il Dockerfile fa il build) e termina.
+    # `!override`, non `!reset`: quest'ultimo azzera e basta (va bene per
+    # ports: !reset [], una lista vuota), ma qui serve sostituire con un
+    # valore vero - verificato che `!reset` con contenuto non vuoto scarta
+    # la chiave intera invece di sostituirla.
+    volumes: !override
+      - backoffice-dist:/srv/backoffice
+    restart: "no"
+
+  # ─── Porte dei servizi: chiuse ───────────────────────────────────
+  mariadb:
+    container_name: fipav-mariadb-stage
+    ports: !reset []
+    volumes:
+      - ./docker/mysql/stage/mysql.cnf:/etc/mysql/conf.d/mysql.cnf:ro
+
+  redis:
+    container_name: fipav-redis-stage
+    ports: !reset []
+
+  # MP_SMTP_AUTH_FILE al posto di MP_SMTP_AUTH_ACCEPT_ANY (in chiaro nel
+  # compose base): pretende una credenziale vera, non un relay aperto. Il
+  # file non si scrive a mano - `make up-stage` lo genera da
+  # HORIZON_BASIC_AUTH_USER/HASH, stessa credenziale di /core/horizon.
+  # MAIL_USERNAME/MAIL_PASSWORD in fipav-core/src/.env vanno allineati alla
+  # stessa coppia (utente/password in chiaro, non l'hash).
+  mailpit:
+    container_name: fipav-mailpit-stage
+    ports: !reset []
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: 0
+      MP_SMTP_AUTH_FILE: /data/smtp-auth
+    volumes:
+      - ./docker/mailpit/smtp-auth:/data/smtp-auth:ro
+
+  meilisearch:
+    container_name: fipav-meilisearch-stage
+    ports: !reset []
+    environment:
+      MEILI_ENV: production
+      MEILI_MASTER_KEY: "${MEILI_MASTER_KEY}"
+
+  gateway:
+    container_name: fipav-gateway-stage
+    volumes:
+      - ./docker/gateway/stage/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./docker/gateway/stage/backoffice.conf:/etc/caddy/backoffice.conf:ro
+      - backoffice-dist:/srv/backoffice:ro
+      # `make up-stage` lo rigenera PRIMA di questo `up`, quindi il file esiste
+      # sempre quando il gateway parte: senza, Docker monterebbe una directory
+      # vuota al posto suo (bind mount di un path host inesistente).
+      - ./docker/gateway/stage/sites.conf:/etc/caddy/sites.conf:ro
+    depends_on:
+      # Il gateway parte quando la build e' finita, non prima: altrimenti la
+      # prima richiesta a /backoffice/ troverebbe il volume ancora vuoto e
+      # Caddy servirebbe un 404 che sembra un errore di configurazione.
+      backoffice:
+        condition: service_completed_successfully
+
+# Prima erano pinnati a fipav-core_* (per riusare il DB reale dello stack
+# standalone di fipav-core): con il suffisso, deliberato, quel legame si
+# rompe - vedi il commento su volumes in docker-compose.yml.
+volumes:
+  mariadb-data:
+    name: fipav-core_mariadb-data-stage
+  meilisearch-data:
+    name: fipav-core_meilisearch-data-stage
+  redis-data:
+    name: fipav-core_redis-data-stage
+  # backoffice-node-modules/comter-node-modules dichiarati in
+  # docker-compose.yml ma non piu' referenziati da nessun servizio qui:
+  # l'immagine di stage e' self-contained, non le usa. Restano dichiarati
+  # (innocuo, Compose non le crea se non montate) invece di rimuoverle dalla
+  # base solo per lo stage.
+  caddy-data:
+    name: fipavonline_caddy-data-stage
+  caddy-config:
+    name: fipavonline_caddy-config-stage
+  # Condiviso fra backoffice (scrive, poi termina) e gateway (legge in sola
+  # lettura): sostituisce il vecchio bind mount host
+  # ../fipav-backoffice/build, che non esiste piu' - la build ora vive
+  # DENTRO l'immagine (docker/backoffice/stage/Dockerfile), non sull'host.
+  backoffice-dist:
+    name: fipavonline_backoffice-dist-stage

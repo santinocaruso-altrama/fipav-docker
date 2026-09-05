@@ -1,34 +1,20 @@
-# Gateway unico dell'ecosistema FIPAV Online.
+# Gateway per lo sviluppo locale.
 #
 #   /            -> fipav-comter-frontend  (Next.js dev server)
 #   /core/       -> fipav-core             (Laravel, via FastCGI)
 #   /backoffice/ -> fipav-backoffice       (Vite dev server)
 #
-# Lo stesso file serve il locale e lo staging: cambia solo GATEWAY_SITES.
-# Vedi docs/superpowers/specs/2026-07-29-https-letsencrypt-design.md
-{
-	# Ignorato finche' GATEWAY_SITES non contiene hostname pubblici: senza di
-	# quelli Caddy non parla con nessuna CA.
-	acme_ca {$ACME_CA:https://acme-v02.api.letsencrypt.org/directory}
-
-	# Nessuna direttiva `email`: l'account ACME resta senza indirizzo, quindi
-	# Let's Encrypt non manda avvisi di scadenza. E' voluto. Con il rinnovo
-	# automatico quegli avvisi non servono, e la direttiva non ammette un valore
-	# vuoto: `email {$VAR}` con la variabile non impostata e' un errore di
-	# parsing, che romperebbe il gateway in locale.
-	#
-	# Per attivarli, aggiungi qui `email indirizzo@dominio` con un valore reale.
-}
-
-# In locale vale `http://`: qualunque Host sulla 80, in chiaro. E' l'equivalente
-# del `server_name _` di nginx, quindi il routing multi-tenant per sottodominio
-# di comter (src/proxy.ts -> header x-tenant) continua a funzionare con
-# calabria.localhost e simili.
+# Fino a poco fa questo era lo stesso file di staging (un solo Caddyfile,
+# con un `import` che sceglieva quali pezzi cambiavano). Ora sono due file
+# separati: docker/gateway/dev/Caddyfile e docker/gateway/stage/Caddyfile. Vantaggio: ognuno hardcoda i
+# propri import invece di indirezioni via env var, ed e' piu' facile da
+# leggere in isolamento. Costo accettato: la logica condivisa (routing
+# /core, le guardie di sicurezza, /live/*) e' DUPLICATA fra i due file - un
+# fix a una guardia va applicato in entrambi, o divergono in silenzio.
 #
-# In staging contiene l'elenco degli hostname dei comitati: da quel solo fatto
-# Caddy attiva l'HTTPS automatico, emette i certificati, li rinnova e
-# reindirizza http a https. Nessun comando, ne' ora ne' fra 60 giorni.
-{$GATEWAY_SITES:http://} {
+# Vedi docs/superpowers/specs/2026-07-29-https-letsencrypt-design.md
+
+(site) {
 	# Allineato al limite del nginx legacy di fipav-core: media fino a 25 MB.
 	request_body {
 		max_size 25MB
@@ -46,15 +32,8 @@
 
 	redir /backoffice /backoffice/ 301
 
-	# In sviluppo e' un proxy al dev server di Vite, in staging sono i file
-	# statici della build: due handler troppo diversi per essere scelti con una
-	# variabile dentro una direttiva, quindi la variabile sceglie il FILE.
-	# Il default e' lo sviluppo; l'overlay di staging punta a *-prod.conf.
-	#
-	# Cosi' resta un solo Caddyfile per i due ambienti, e la differenza e'
-	# confinata in due file brevi e affiancati, facili da confrontare.
 	handle /backoffice/* {
-		import {$BACKOFFICE_HANDLER:/etc/caddy/backoffice-dev.conf}
+		import backoffice.conf
 	}
 
 	# ─── /core -> Laravel via FastCGI ────────────────────────────────
@@ -155,6 +134,26 @@
 			@storage path /storage/*
 			header @storage Access-Control-Allow-Origin *
 
+			# SOLO IN DEV. storage/app/public non e' popolato dai seed/migration,
+			# solo da `make sync-storage` (rsync da staging) - un backups di DB
+			# restorato senza quello step referenzia migliaia di file che qui
+			# non esistono. Senza questo blocco cadrebbero su php_fastcgi, che
+			# risponde 403 (non un pulito 404): pagine piene di icone rotte
+			# durante lo sviluppo. In staging NON c'e' questo blocco (vedi
+			# docker/gateway/stage/Caddyfile): li' un file mancante e' un
+			# problema vero e deve restare visibile come tale, non mascherato.
+			#
+			# placeholder.svg vive in fipav-core/src/public (root e' gia'
+			# quello, vedi sopra): niente da montare in piu' nel compose.
+			@storage-missing {
+				path /storage/*
+				not file
+			}
+			handle @storage-missing {
+				rewrite * /placeholder.svg
+				file_server
+			}
+
 			# SCRIPT_NAME e' il punto chiave di tutta questa configurazione. Da
 			# /core/index.php Symfony ricava baseUrl=/core e pathInfo=/api/...:
 			# le route continuano a fare match sui path senza prefisso, mentre
@@ -193,6 +192,10 @@
 	# volume: finche' comter:3000 o backoffice:3000 non accettano connessioni,
 	# reverse_proxy fallisce con 502. Senza questo blocco l'utente vede una
 	# pagina bianca invece di un messaggio comprensibile.
+	#
+	# Solo dev: in staging i frontend partono gia' pronti da un'immagine
+	# costruita in anticipo (Dockerfile.stage), non c'e' piu' un'attesa da
+	# mascherare - vedi docker/gateway/stage/Caddyfile, che non ha questo blocco.
 	#
 	# Il matcher e' sullo status code, non sull'handler: cattura anche un
 	# eventuale 502/504 di php_fastcgi. In quel caso "stiamo installando" e'
@@ -330,3 +333,19 @@ HTML 503
 		}
 	}
 }
+
+# Endpoint interno per le chiamate server-side di comter (apiFetch() in
+# fipav-comter-frontend/src/lib/api.ts): il tenant viaggia nell'header
+# x-tenant, non nell'hostname, quindi un solo indirizzo fisso serve tutti i
+# comitati. Porta dedicata (8081), NON pubblicata in nessun docker-compose*.yml
+# - qui in dev non servirebbe (sites.conf risponde gia' a qualunque Host
+# sulla 80), ma comter chiama sempre questo indirizzo in entrambi gli
+# ambienti (stesso default in docker-compose.yml), quindi resta presente.
+http://gateway:8081 {
+	import site
+}
+
+# Qualunque Host sulla porta 80, in chiaro - l'equivalente del `server_name _`
+# di nginx. Il routing multi-tenant per sottodominio di comter (src/proxy.ts
+# -> header x-tenant) continua a funzionare con calabria.localhost e simili.
+import sites.conf

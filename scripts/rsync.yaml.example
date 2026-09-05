@@ -1,0 +1,25 @@
+# Configurazione per scripts/sync-storage.sh. Copia in rsync.yaml (non
+# tracciato: contiene l'hostname reale della macchina di staging) e adatta.
+#
+# Solo remoto -> locale: scarica gli upload reali di staging per testare in
+# locale con media veri invece di placeholder. Non scrive MAI sul remoto -
+# lo script apre la connessione SSH solo in lettura (rsync senza --delete
+# lato remoto, nessun comando che modifichi qualcosa sulla macchina di staging).
+
+# utente@host SSH della macchina di staging.
+host: user@fipav.altrama.it
+
+# Porta SSH, se non e' la 22.
+port: 22
+
+# Facoltativo: path del file di identita' SSH (chiave/certificato) da usare
+# al posto di quella di default (~/.ssh/id_rsa e simili) o di un prompt
+# password. Es: ~/.ssh/fipav-staging.pem
+identity_file:
+
+# Path assoluto su staging. Esempio nella richiesta originale:
+# /opt/fipavonline/fipav-core/src/storage/app/public
+remote_path: /opt/fipavonline/fipav-core/src/storage/app/public
+
+# Path locale, relativo a questa cartella (scripts/).
+local_path: ../../fipav-core/src/storage/app/public

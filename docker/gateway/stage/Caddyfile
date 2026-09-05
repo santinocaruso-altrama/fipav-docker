@@ -1,0 +1,220 @@
+# Gateway per la macchina pubblica di staging.
+#
+#   /            -> fipav-comter-frontend  (server Next.js, immagine gia' pronta)
+#   /core/       -> fipav-core             (Laravel, via FastCGI)
+#   /backoffice/ -> fipav-backoffice       (file statici, immagine gia' pronta)
+#
+# Fino a poco fa questo era lo stesso file di dev (un solo Caddyfile, con un
+# `import` che sceglieva quali pezzi cambiavano). Ora sono due file separati:
+# docker/gateway/dev/Caddyfile e docker/gateway/stage/Caddyfile. Vantaggio: ognuno hardcoda i propri import
+# invece di indirezioni via env var, ed elimina la pagina di attesa che qui
+# non serve piu' (i frontend partono gia' pronti da Dockerfile.stage, niente
+# piu' install/build a runtime da mascherare). Costo accettato: la logica
+# condivisa (routing /core, le guardie di sicurezza, /live/*) e' DUPLICATA
+# fra i due file - un fix a una guardia va applicato in entrambi, o
+# divergono in silenzio.
+#
+# Vedi docs/superpowers/specs/2026-07-29-https-letsencrypt-design.md
+{
+	# Serve finche' sites.conf non contiene almeno un hostname pubblico
+	# (scripts/sync-sites.sh lo scrive prima che questo container parta).
+	acme_ca {$ACME_CA:https://acme-v02.api.letsencrypt.org/directory}
+
+	# Nessuna direttiva `email`: l'account ACME resta senza indirizzo, quindi
+	# Let's Encrypt non manda avvisi di scadenza. E' voluto. Con il rinnovo
+	# automatico quegli avvisi non servono, e la direttiva non ammette un
+	# valore vuoto: `email {$VAR}` con la variabile non impostata sarebbe un
+	# errore di parsing, che romperebbe il gateway.
+	#
+	# Per attivarli, aggiungi qui `email indirizzo@dominio` con un valore reale.
+}
+
+(site) {
+	# Allineato al limite del nginx legacy di fipav-core: media fino a 25 MB.
+	request_body {
+		max_size 25MB
+	}
+
+	# Compressione delle risposte testuali. Conta soprattutto per gli snapshot
+	# del live score: quando il file cambia, tutti gli spettatori di quel
+	# comitato ne scaricano il corpo intero entro la finestra di polling. Con
+	# 10.000 spettatori un JSON da 20 KB sono 200 MB di picco, ~40 MB
+	# compresso. E' il limite piu' vicino di tutto l'impianto, ed e' banda,
+	# non CPU.
+	encode zstd gzip
+
+	# ─── /backoffice -> file statici (build gia' pronta) ─────────────
+
+	redir /backoffice /backoffice/ 301
+
+	handle /backoffice/* {
+		import backoffice.conf
+	}
+
+	# ─── /core -> Laravel via FastCGI ────────────────────────────────
+
+	redir /core /core/ 301
+
+	# handle_path spoglia il prefisso, quindi la ricerca dei file su disco
+	# avviene direttamente in public/. Equivale al `rewrite ^/core/(.*)$ /$1
+	# break` che nginx usava per toccare $uri lasciando intatto $request_uri.
+	handle_path /core/* {
+		root * /var/www/html/public
+
+		# `route` impone l'ordine di valutazione che vedi scritto. Senza,
+		# Caddy applica il proprio ordine di direttive e le guardie qui sotto
+		# potrebbero essere valutate DOPO php_fastcgi, diventando inefficaci
+		# senza alcun sintomo visibile.
+		route {
+			# GUARDIA DI SICUREZZA. Due motivi, entrambi seri:
+			#
+			# 1. storage/ contiene file caricati dagli utenti. Senza questa
+			#    riga php_fastcgi eseguirebbe un .php arrivato per upload:
+			#    esecuzione di codice arbitrario. Verificato: senza la guardia
+			#    il codice viene eseguito davvero.
+			# 2. l'unico entrypoint PHP legittimo e' l'index.php implicito di
+			#    php_fastcgi, raggiunto per rewrite interno e non per URL.
+			#
+			# Il rewrite interno di php_fastcgi avviene dopo questo matcher,
+			# quindi l'applicazione continua a funzionare normalmente.
+			@php path *.php
+			respond @php 404
+
+			# Dotfile non raggiungibili (.env, .git, ...), eccetto .well-known
+			# che serve alle challenge ACME e ai file di verifica dei servizi.
+			# RE2 non ha i lookahead negativi, quindi l'eccezione si esprime
+			# con `not` invece che con (?!...).
+			@dotfiles {
+				path /.* /*/.*
+				not path /.well-known/*
+			}
+			respond @dotfiles 403
+
+			# GUARDIA DI SICUREZZA per la dashboard delle code. Il gate
+			# applicativo (HorizonServiceProvider::gate()) non basta da solo:
+			# il pacchetto Horizon bypassa qualunque gate quando
+			# APP_ENV=local (comportamento del pacchetto stesso,
+			# HorizonApplicationServiceProvider->authorize(): "environment
+			# ('local') || Gate::check(...)"), e questa macchina puo' avere
+			# quella variabile cambiata in futuro senza che nessuno colleghi
+			# il collegamento con l'esposizione della dashboard.
+			#
+			# Non e' un blocco per IP: questo host gira Docker in modalita'
+			# rootless (RootlessKit gestisce il port-forwarding in userspace)
+			# e non preserva l'indirizzo del client - ogni richiesta pubblica
+			# arriva a Caddy con l'IP del gateway della rete Docker, mai
+			# quello reale. Un `remote_ip` qui bloccherebbe chiunque,
+			# incluso chi dovrebbe entrare. Basic Auth non ha questo
+			# problema: non dipende dall'IP.
+			basicauth /horizon* {
+				{$HORIZON_BASIC_AUTH_USER} {$HORIZON_BASIC_AUTH_HASH}
+			}
+
+			# Snapshot statici del live score, rigenerati a evento da
+			# App\Services\LiveScoreSnapshot.
+			#
+			# `handle` chiude il percorso: queste richieste non arrivano mai a
+			# php_fastcgi, ed e' tutto il punto. 10.000 spettatori su un
+			# comitato fanno ~330 richieste/s, contro il centinaio che regge il
+			# pool php-fpm.
+			#
+			# Senza questo blocco basterebbe un file mancante per vanificare
+			# l'impianto: php_fastcgi ripiega su index.php quando il path non
+			# esiste su disco, quindi un comitato senza snapshot manderebbe
+			# TUTTO il suo polling dentro PHP. Verificato: prima di questo
+			# blocco /core/live/lazio.json rispondeva 502.
+			handle /live/* {
+				# max-age sotto l'intervallo di polling del client (30s): entro
+				# quella finestra il browser risponde dalla propria cache senza
+				# toccare la rete, oltre rivalida con l'ETag che file_server
+				# emette da se' e riceve un 304 da poche centinaia di byte.
+				header Cache-Control "public, max-age=20, stale-while-revalidate=60"
+
+				# Snapshot non ancora generato (comitato senza partite, o prima
+				# del primo evento): lista vuota, non un errore. Il frontend
+				# mostra "nessuna partita" invece di uno stato di errore, e
+				# nessuna richiesta tocca PHP.
+				@missing not file
+				header @missing Content-Type application/json
+				respond @missing "[]" 200 {
+					close
+				}
+
+				file_server
+			}
+
+			# I media di storage/public sono pubblici per design: l'header CORS
+			# consente al backoffice di leggerne i pixel via canvas (editor di
+			# crop/resize), cosa che un <img> cross-origin non permetterebbe.
+			@storage path /storage/*
+			header @storage Access-Control-Allow-Origin *
+
+			# SCRIPT_NAME e' il punto chiave di tutta questa configurazione. Da
+			# /core/index.php Symfony ricava baseUrl=/core e pathInfo=/api/...:
+			# le route continuano a fare match sui path senza prefisso, mentre
+			# url(), route(), asset() e Storage::url() generano URL con /core
+			# davanti. Senza l'override Laravel produrrebbe link verso / e
+			# Swagger UI, redirect e URL dei media si romperebbero.
+			#
+			# REQUEST_URI va riportato all'originale perche' handle_path ha
+			# spogliato il prefisso: senza, Symfony calcolerebbe pathInfo su un
+			# URI privo di /core e la deduzione di baseUrl fallirebbe.
+			php_fastcgi php:9000 {
+				env SCRIPT_NAME /core/index.php
+				env REQUEST_URI {http.request.orig_uri}
+			}
+
+			# Obbligatorio: php_fastcgi NON serve i file statici, si limita a
+			# instradare i .php. Senza questa riga favicon.ico, robots.txt,
+			# images/ e i media di storage/ tornerebbero 200 con corpo vuoto,
+			# che e' la risposta di Caddy alle richieste non gestite.
+			file_server
+		}
+	}
+
+	# ─── / -> Next.js (immagine gia' pronta) ─────────────────────────
+
+	# L'Host viene propagato inalterato, cosi' il routing multi-tenant per
+	# sottodominio di comter continua a funzionare.
+	handle {
+		reverse_proxy comter:3000
+	}
+
+	# Nessuna pagina di attesa qui: comter e backoffice partono gia' pronti
+	# da un'immagine costruita in anticipo (Dockerfile.stage multi-stage),
+	# non c'e' piu' un install/build a runtime da mascherare con un 503
+	# temporaneo. Un 502/504 in staging e' un problema reale da vedere,
+	# non un avvio normale - vedi docker/gateway/dev/Caddyfile per il blocco che qui manca
+	# di proposito.
+}
+
+# Endpoint interno per le chiamate server-side di comter (apiFetch() in
+# fipav-comter-frontend/src/lib/api.ts): il tenant viaggia nell'header
+# x-tenant, non nell'hostname, quindi un solo indirizzo fisso serve tutti i
+# comitati - non importa quanti hostname diversi abbiano (sottodomini di
+# COMTER_ROOT_DOMAIN, domini propri, non importa: questo blocco non ne
+# dipende affatto).
+#
+# Porta dedicata (8081), NON pubblicata in nessun docker-compose*.yml: e'
+# questo che lo rende davvero interno, non il nome host. Un Host header non
+# distingue chi lo manda - "gateway" e' un valore di testo come un altro,
+# chiunque raggiunga la 80/443 pubblica puo' scriverlo in una richiesta.
+# Sulla 8081, invece, Docker non inoltra nulla dall'esterno del host: ci
+# arriva solo chi e' gia' dentro la rete fipav-network. E' la stessa garanzia
+# per cui mariadb/redis/mailpit "chiudono" la porta in staging (ports: !reset
+# []) - qui non serve resettare nulla, la porta non e' mai stata pubblicata.
+#
+# `http://` esplicito: niente Automatic HTTPS tentato per "gateway" (non e'
+# un hostname pubblico risolvibile - non ha senso provarci).
+http://gateway:8081 {
+	import site
+}
+
+# Un blocco "hostname.dominio { import site }" per ogni comitato attivo in
+# DB (generato da scripts/sync-sites.sh in sites.conf, NON tracciato in
+# git). Da quella sola presenza in un indirizzo Caddy attiva l'HTTPS
+# automatico, emette i certificati, li rinnova e reindirizza http a https -
+# nessun comando, ne' ora ne' fra 60 giorni. `make up-stage` lo rigenera
+# prima di avviare questo gateway; `make sync-sites` lo riallinea dopo, a
+# stack gia' su, e ricarica Caddy senza ricrearne il container.
+import sites.conf
