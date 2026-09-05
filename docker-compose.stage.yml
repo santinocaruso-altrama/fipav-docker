@@ -6,15 +6,22 @@
 # oppure `make up-stage`
 
 services:
+  # Pool php-fpm di default (pm.max_children=5, mai personalizzato): un
+  # limite generoso protegge da una request che alloca memoria senza
+  # controllo, non da un uso normale.
   php:
     container_name: fipav-php-stage
     build:
       context: ./docker/php/stage
+    mem_limit: 1g
 
+  # Fino a 13 worker in produzione (config/horizon.php: supervisor-1
+  # maxProcesses=10 + supervisor-referti maxProcesses=3).
   horizon:
     container_name: fipav-horizon-stage
     build:
       context: ./docker/php/stage
+    mem_limit: 2g
 
   # ─── Frontend: build multi-stage DENTRO l'immagine ───────────────
   #
@@ -37,6 +44,7 @@ services:
     # self-contained (vedi docker/comter/stage/Dockerfile). Il container si
     # ricrea per deployare codice nuovo - serve un `make build` prima.
     volumes: !reset []
+    mem_limit: 1g
 
   backoffice:
     container_name: fipav-backoffice-stage
@@ -57,6 +65,12 @@ services:
     volumes: !override
       - backoffice-dist:/srv/backoffice
     restart: "no"
+    # npm ci + vite build girano dentro il Dockerfile (fase di `docker
+    # build`, non soggetta a questo limite): il container che `up` avvia fa
+    # solo un `cp` e termina, non ha mai davvero bisogno di 2g. Margine
+    # tenuto comunque generoso perché non compete con nessun altro servizio
+    # sempre acceso (vive solo per la durata del deploy).
+    mem_limit: 2g
 
   # ─── Porte dei servizi: chiuse ───────────────────────────────────
   #
@@ -68,9 +82,10 @@ services:
   mariadb:
     container_name: fipav-mariadb-stage
     ports: !reset []
-    # innodb_buffer_pool_size in mysql.cnf e' gia' 4512M (~73% di 6G),
-    # lascia margine per connection buffer/overhead sotto questo cap.
-    mem_limit: 6g
+    # innodb_buffer_pool_size in mysql.cnf ridotto in coppia con questo cap
+    # (vedi quel file): sopra il limite del cgroup, MariaDB andrebbe in OOM
+    # al riavvio nel tentativo di allocare più buffer pool di quanto concesso.
+    mem_limit: 4g
     volumes:
       - ./docker/mysql/stage/mysql.cnf:/etc/mysql/conf.d/mysql.cnf:ro
 
@@ -84,8 +99,8 @@ services:
     # accodato e' un lavoro perso se una policy di eviction lo cancella per
     # far posto, mentre un errore di scrittura a memoria piena e' visibile
     # e recuperabile.
-    command: redis-server --appendonly yes --appendfsync everysec --maxmemory 7gb --maxmemory-policy noeviction
-    mem_limit: 8g
+    command: redis-server --appendonly yes --appendfsync everysec --maxmemory 5gb --maxmemory-policy noeviction
+    mem_limit: 6g
 
   # MP_SMTP_AUTH_FILE al posto di MP_SMTP_AUTH_ACCEPT_ANY (in chiaro nel
   # compose base): pretende una credenziale vera, non un relay aperto. Il
@@ -101,6 +116,7 @@ services:
       MP_SMTP_AUTH_FILE: /data/smtp-auth
     volumes:
       - ./docker/mailpit/smtp-auth:/data/smtp-auth:ro
+    mem_limit: 256m
 
   meilisearch:
     container_name: fipav-meilisearch-stage
@@ -111,6 +127,7 @@ services:
 
   gateway:
     container_name: fipav-gateway-stage
+    mem_limit: 256m
     volumes:
       - ./docker/gateway/stage/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./docker/gateway/stage/backoffice.conf:/etc/caddy/backoffice.conf:ro

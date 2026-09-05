@@ -3,8 +3,11 @@
 
 [mysqld]
 
-# pure - indicativamente 60-70% della RAM del container/host dedicata al DB.
-innodb_buffer_pool_size = 4512M
+# ~62% del mem_limit del container in docker-compose.stage.yml (4g): il resto
+# resta per connection buffer (sort/join buffer x max_connections), temp
+# table e overhead del processo, così il container non va in OOM contro il
+# proprio cgroup.
+innodb_buffer_pool_size = 2560M
 innodb_log_file_size = 512M
 innodb_flush_log_at_trx_commit = 2
 slow_query_log = 1
