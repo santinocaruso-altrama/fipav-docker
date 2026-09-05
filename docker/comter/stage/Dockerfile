@@ -25,6 +25,12 @@ RUN bun install --frozen-lockfile
 
 COPY . .
 
+# NEXT_PUBLIC_* va iniettato PRIMA di `next build`: Next lo sostituisce
+# staticamente nel bundle browser in quel momento, un env var solo a runtime
+# (docker-compose.yml, per il lato server) non basterebbe per il client.
+ARG NEXT_PUBLIC_SENTRY_DSN
+ENV NEXT_PUBLIC_SENTRY_DSN=$NEXT_PUBLIC_SENTRY_DSN
+
 # Stessa ragione del command override che questo Dockerfile sostituisce (vedi
 # git blame docker-compose.stage.yml): NODE_ENV va forzato DENTRO il comando,
 # non con un ENV prima - `next build` lo imposta da se' solo se non e' gia'

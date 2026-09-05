@@ -28,6 +28,11 @@ services:
     build:
       context: ../fipav-comter-frontend
       dockerfile: ../fipav-docker/docker/comter/stage/Dockerfile
+      # NEXT_PUBLIC_* finisce nel bundle browser durante `next build` (dentro
+      # l'immagine): un env var a runtime (sopra, in docker-compose.yml) non
+      # basterebbe per il lato client, va passato come build arg.
+      args:
+        NEXT_PUBLIC_SENTRY_DSN: "${COMTER_SENTRY_DSN:-}"
     # Nessun bind mount, nessun volume node_modules: l'immagine e'
     # self-contained (vedi docker/comter/stage/Dockerfile). Il container si
     # ricrea per deployare codice nuovo - serve un `make build` prima.
@@ -38,6 +43,10 @@ services:
     build:
       context: ../fipav-backoffice
       dockerfile: ../fipav-docker/docker/backoffice/stage/Dockerfile
+      # VITE_* finisce nel bundle durante `vite build` (dentro l'immagine):
+      # un env var a runtime non basterebbe, va passato come build arg.
+      args:
+        VITE_SENTRY_DSN: "${BACKOFFICE_SENTRY_DSN:-}"
     # Sostituisce bind mount + volume node_modules della base: l'unico
     # volume che resta e' quello condiviso col gateway, dove il container
     # copia gli asset gia' pronti (il Dockerfile fa il build) e termina.

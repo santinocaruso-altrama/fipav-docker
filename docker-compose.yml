@@ -99,6 +99,11 @@ services:
       API_BASE_URL: "${COMTER_API_BASE_URL:-http://gateway:8081/core/api/v1/public/cms}"
       NEXT_PUBLIC_ROOT_DOMAIN: "${COMTER_ROOT_DOMAIN:-localhost}"
       NEXT_TELEMETRY_DISABLED: "1"
+      # Letto a runtime da sentry.server.config.ts/sentry.edge.config.ts.
+      # Lato client il DSN va invece iniettato a BUILD time (vedi
+      # docker-compose.stage.yml build.args + docker/comter/stage/Dockerfile):
+      # questa riga da sola non basta per il bundle browser.
+      NEXT_PUBLIC_SENTRY_DSN: "${COMTER_SENTRY_DSN:-}"
     expose:
       - "3000"
     networks:

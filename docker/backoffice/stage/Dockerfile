@@ -19,6 +19,13 @@ RUN npm ci
 
 COPY . .
 
+# VITE_* va iniettato PRIMA di `vite build`: Vite lo sostituisce
+# staticamente nel bundle in quel momento (import.meta.env.VITE_SENTRY_DSN),
+# un env var solo a runtime non servirebbe a niente qui - il container non
+# resta in ascolto, copia gli asset e termina.
+ARG VITE_SENTRY_DSN
+ENV VITE_SENTRY_DSN=$VITE_SENTRY_DSN
+
 # Stessa ragione del command override che questo Dockerfile sostituisce (vedi
 # git blame docker-compose.stage.yml): NODE_ENV va forzato DENTRO il comando,
 # non con un ENV prima - con NODE_ENV=production gia' impostato, `npm ci`
