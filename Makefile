@@ -25,7 +25,7 @@
        migrate migrate-status migrate-fresh seed fresh \
        test test-filter swagger routes cache-clear \
        db-dump db-restore backup-db rotate-db-password \
-       fe-reset
+       fe-reset fe-check fe-lint fe-typecheck fe-test fe-test-e2e
 
 # Due file invece di un solo .env: un dev che lascia XDEBUG_MODE=debug e
 # COMTER_ROOT_DOMAIN=localhost non deve toccare quei valori ogni volta che
@@ -580,6 +580,31 @@ test: ## Esegue i test di fipav-core
 
 test-filter: ## Test filtrati (uso: make test-filter f="NomeTest")
 	docker compose --env-file $(ACTIVE_ENV_FILE) $(ACTIVE_COMPOSE) exec php php artisan test --filter=$(f)
+
+# ─── fipav-backoffice: qualita' e test ───────────────────
+# Stesso principio dei comandi PHP sopra: replicano `make check`/`make test`/
+# `make test-e2e` di fipav-backoffice, eseguiti pero' nel container (node_modules
+# li' e' un volume named installato per linux, non riusa quello del Mac - vedi
+# docker/backoffice/dev/Dockerfile).
+
+fe-check: ## Lint + format-check + typecheck del backoffice (replica la CI)
+	docker compose --env-file $(ACTIVE_ENV_FILE) $(ACTIVE_COMPOSE) exec backoffice npm run lint
+	docker compose --env-file $(ACTIVE_ENV_FILE) $(ACTIVE_COMPOSE) exec backoffice npm run format:check
+	docker compose --env-file $(ACTIVE_ENV_FILE) $(ACTIVE_COMPOSE) exec backoffice npm run typecheck
+	@echo ""
+	@echo "$(GREEN)Tutti i controlli del backoffice sono passati$(RESET)"
+
+fe-lint: ## Solo ESLint del backoffice (include compat/compat, il check cross-browser)
+	docker compose --env-file $(ACTIVE_ENV_FILE) $(ACTIVE_COMPOSE) exec backoffice npm run lint
+
+fe-typecheck: ## Solo tsc --noEmit del backoffice
+	docker compose --env-file $(ACTIVE_ENV_FILE) $(ACTIVE_COMPOSE) exec backoffice npm run typecheck
+
+fe-test: ## Test unitari del backoffice (vitest)
+	docker compose --env-file $(ACTIVE_ENV_FILE) $(ACTIVE_COMPOSE) exec backoffice npm test
+
+fe-test-e2e: ## Test end-to-end del backoffice (Playwright)
+	docker compose --env-file $(ACTIVE_ENV_FILE) $(ACTIVE_COMPOSE) exec backoffice npm run test:e2e
 
 swagger: ## Rigenera la spec OpenAPI
 	docker compose --env-file $(ACTIVE_ENV_FILE) $(ACTIVE_COMPOSE) exec php php artisan openapi:generate
