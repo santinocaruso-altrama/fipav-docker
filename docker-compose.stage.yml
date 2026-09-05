@@ -59,15 +59,33 @@ services:
     restart: "no"
 
   # ─── Porte dei servizi: chiuse ───────────────────────────────────
+  #
+  # Limiti di memoria: macchina GCP da 16 GB condivisa con tutti gli altri
+  # servizi di questo file. mem_limit e' l'hard cap del cgroup (Docker
+  # uccide il container se lo supera, OOM) - va usato, non
+  # deploy.resources.limits, che senza Swarm/--compatibility viene
+  # silenziosamente ignorato da `docker compose up`.
   mariadb:
     container_name: fipav-mariadb-stage
     ports: !reset []
+    # innodb_buffer_pool_size in mysql.cnf e' gia' 4512M (~73% di 6G),
+    # lascia margine per connection buffer/overhead sotto questo cap.
+    mem_limit: 6g
     volumes:
       - ./docker/mysql/stage/mysql.cnf:/etc/mysql/conf.d/mysql.cnf:ro
 
   redis:
     container_name: fipav-redis-stage
     ports: !reset []
+    # maxmemory sotto (non uguale a) mem_limit: lascia margine all'overhead
+    # del processo (buffer di replica/client, frammentazione) oltre al
+    # dataset. noeviction, non allkeys-lru: questa istanza serve anche da
+    # backend per le code di Horizon (QUEUE_CONNECTION=redis) - un job
+    # accodato e' un lavoro perso se una policy di eviction lo cancella per
+    # far posto, mentre un errore di scrittura a memoria piena e' visibile
+    # e recuperabile.
+    command: redis-server --appendonly yes --appendfsync everysec --maxmemory 7gb --maxmemory-policy noeviction
+    mem_limit: 8g
 
   # MP_SMTP_AUTH_FILE al posto di MP_SMTP_AUTH_ACCEPT_ANY (in chiaro nel
   # compose base): pretende una credenziale vera, non un relay aperto. Il
