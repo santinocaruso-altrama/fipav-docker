@@ -99,6 +99,16 @@ services:
       # http://fipav-nginx: senza questa, gli URL delle immagini uscirebbero
       # con quell'hostname, che il browser non risolve. Vedi config/app.php.
       ASSET_URL: "${CORE_ASSET_URL:-/core}"
+      # Le origini da cui il backoffice puo' autenticarsi con la sessione.
+      # Va imposta qui e non lasciata al .env di fipav-core, che vale
+      # localhost:3000: quello e' `npm run dev` fuori da Docker, mentre qui il
+      # backoffice lo serve il gateway su localhost. Se l'origine non e' in
+      # elenco Sanctum non applica StartSession, e AuthController::login
+      # chiama $request->session()->regenerate() DOPO aver validato le
+      # credenziali: il login riesce e poi risponde 500 "Session store not set
+      # on request.". Il sintomo non nomina il dominio e arriva a credenziali
+      # corrette, quindi non fa pensare a un problema di origine.
+      SANCTUM_STATEFUL_DOMAINS: "${CORE_STATEFUL_DOMAINS:-localhost,*.localhost,localhost:3000,127.0.0.1,127.0.0.1:8000,::1}"
       XDEBUG_MODE: "${XDEBUG_MODE:-debug}"
       XDEBUG_CONFIG: client_host=host.docker.internal
     extra_hosts:

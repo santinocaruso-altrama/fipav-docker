@@ -162,6 +162,25 @@ up-staging: ## Avvia lo stack sulla macchina pubblica (HTTPS + porte chiuse)
 	   echo ""; \
 	   exit 1; \
 	 fi
+	@# Il default di CORE_STATEFUL_DOMAINS nel compose vale per il locale. In
+	@# staging il backoffice arriva dagli hostname pubblici: se non sono in
+	@# elenco Sanctum non applica StartSession e il login risponde 500
+	@# "Session store not set on request." DOPO aver validato le credenziali.
+	@# Il sintomo arriva a login riuscito e non nomina il dominio, quindi si
+	@# intercetta qui.
+	@case "$(CORE_STATEFUL_DOMAINS)" in \
+	   *localhost*|"") echo ""; \
+	      echo "$(RED)CORE_STATEFUL_DOMAINS non elenca gli hostname pubblici.$(RESET)"; \
+	      echo "  (valore attuale: $(CORE_STATEFUL_DOMAINS))"; \
+	      echo "Sono le origini da cui il backoffice puo' autenticarsi via"; \
+	      echo "sessione: i domini serviti, senza schema. Nel .env metti:"; \
+	      echo ""; \
+	      echo "  CORE_STATEFUL_DOMAINS=$(GATEWAY_SITES)"; \
+	      echo ""; \
+	      echo "(gli stessi di GATEWAY_SITES, separati da virgola)"; \
+	      echo ""; \
+	      exit 1;; \
+	 esac
 	docker compose $(STAGING) up -d
 	@echo ""
 	@echo "$(GREEN)Stack di staging avviato$(RESET)"
