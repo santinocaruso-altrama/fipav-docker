@@ -19,6 +19,7 @@
 .PHONY: help \
        up down up-staging down-staging build rebuild restart ps logs \
        logs-gateway logs-php logs-horizon logs-backoffice logs-comter logs-fe \
+       qa down-qa logs-qa \
        install verify diagnose update pull \
        shell sh-backoffice sh-comter \
        artisan composer tinker mariadb redis-cli \
@@ -35,6 +36,7 @@ GATEWAY_PORT     ?= 80
 CORE_LEGACY_PORT ?= 8080
 MAILPIT_UI_PORT  ?= 8025
 MEILI_PORT       ?= 7700
+SONARQUBE_PORT   ?= 9000
 
 # Deve combaciare con `name:` in docker-compose.yml: e' il prefisso dei volumi.
 PROJECT := fipavonline
@@ -226,6 +228,21 @@ logs-comter: ## Log del dev server Next
 
 logs-fe: ## Log dei due frontend insieme (utile al primo avvio)
 	docker compose logs -f backoffice comter
+
+# ─── QA (SonarQube, stack indipendente) ─────────────────
+
+qa: ## Avvia SonarQube (docker-compose.qa.yml, stack a parte)
+	docker compose -f docker-compose.qa.yml up -d
+	@echo ""
+	@echo "$(GREEN)SonarQube in avvio$(RESET) - http://localhost:$(SONARQUBE_PORT)"
+	@echo "$(YELLOW)Al primo avvio$(RESET) impiega qualche minuto: segui $(CYAN)make logs-qa$(RESET)"
+	@echo "finche' non vedi 'SonarQube is operational'."
+
+down-qa: ## Ferma SonarQube (i volumi restano)
+	docker compose -f docker-compose.qa.yml down
+
+logs-qa: ## Log di SonarQube (follow)
+	docker compose -f docker-compose.qa.yml logs -f sonarqube
 
 # ─── Setup e verifica ────────────────────────────────────
 

@@ -1,0 +1,105 @@
+# Stack SonarQube per l'analisi qualita'
+
+# INDIPENDENTE dallo stack applicativo per ciclo di vita: project name
+# proprio (fipavonline-qa), si avvia e si ferma per conto suo:
+#
+#   docker compose -f docker-compose.qa.yml up -d
+#   docker compose -f docker-compose.qa.yml down
+#
+# Il servizio sonarqube pero' si aggancia ANCHE a fipav-network (dichiarata
+# external qui sotto): serve al gateway Caddy dello stack base per
+# raggiungerlo come sonarqube:9000 e farne da reverse proxy su /sonar (vedi
+# docker/gateway/Caddyfile), senza dover aprire la porta 9000 sull'host.
+# Richiede che fipav-network esista gia' - cioe' che lo stack base sia stato
+# avviato almeno una volta (`make up` / docker-compose.yml crea la rete).
+
+name: fipavonline-qa
+
+services:
+  sonarqube:
+    image: sonarqube:lts-community
+    container_name: fipav-sonarqube
+    depends_on:
+      sonarqube-db:
+        condition: service_healthy
+    ports:
+      - "${SONARQUBE_PORT:-9000}:9000"
+    environment:
+      TZ: Europe/Rome
+      SONAR_JDBC_URL: "jdbc:postgresql://sonarqube-db:5432/${SONAR_DB_NAME:-sonar}"
+      SONAR_JDBC_USERNAME: "${SONAR_DB_USER:-sonar}"
+      SONAR_JDBC_PASSWORD: "${SONAR_DB_PASSWORD:-sonar}"
+      # Deve combaciare col path in Caddyfile (handle /sonar*): SonarQube
+      # genera assi/link assumendo di vivere sotto questo prefisso, quindi il
+      # proxy deve inoltrare il path COSI' COM'E' (handle, non handle_path -
+      # niente prefisso da spogliare).
+      SONAR_WEB_CONTEXT: /sonar
+    # vm.max_map_count va impostato sull'HOST, non qui: non e' namespaced sul
+    # kernel di molte distro Linux, e una direttiva sysctls: su questo valore
+    # fa fallire la creazione del container invece di essere ignorata
+    # ("sysctl vm.max_map_count is not in a separate kernel namespace",
+    # verificato su un host di produzione). Sull'host:
+    #
+    #   sudo sysctl -w vm.max_map_count=262144
+    #
+    # permanente oltre il riavvio in /etc/sysctl.conf o /etc/sysctl.d/*.conf.
+    # Non serve su Docker Desktop macOS/Windows, gia' sufficiente nella VM.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+      nproc: 4096
+    volumes:
+      - sonarqube-data:/opt/sonarqube/data
+      - sonarqube-extensions:/opt/sonarqube/extensions
+      - sonarqube-logs:/opt/sonarqube/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9000/sonar/api/system/status | grep -q '\"status\":\"UP\"'"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 2m
+    networks:
+      - qa-network
+      - fipav-network
+
+  sonarqube-db:
+    image: postgres:16-alpine
+    container_name: fipav-sonarqube-db
+    environment:
+      TZ: Europe/Rome
+      POSTGRES_DB: "${SONAR_DB_NAME:-sonar}"
+      POSTGRES_USER: "${SONAR_DB_USER:-sonar}"
+      POSTGRES_PASSWORD: "${SONAR_DB_PASSWORD:-sonar}"
+    volumes:
+      - sonarqube-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${SONAR_DB_USER:-sonar} -d ${SONAR_DB_NAME:-sonar}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks:
+      - qa-network
+
+volumes:
+  sonarqube-data:
+    name: fipavonline-qa_sonarqube-data
+  sonarqube-extensions:
+    name: fipavonline-qa_sonarqube-extensions
+  sonarqube-logs:
+    name: fipavonline-qa_sonarqube-logs
+  sonarqube-db-data:
+    name: fipavonline-qa_sonarqube-db-data
+
+networks:
+  qa-network:
+    name: fipavonline-qa-network
+    driver: bridge
+  # Creata da docker-compose.yml (stack base): qui la si referenzia soltanto,
+  # per agganciarci il servizio sonarqube. Se non esiste ancora (stack base
+  # mai avviato), `docker compose -f docker-compose.qa.yml up` fallisce con un
+  # errore esplicito invece di crearne una seconda scollegata dal gateway.
+  fipav-network:
+    name: fipav-network
+    external: true

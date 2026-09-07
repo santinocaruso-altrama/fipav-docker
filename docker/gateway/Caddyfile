@@ -178,6 +178,23 @@
 		}
 	}
 
+	# ─── /sonar -> SonarQube (docker-compose.qa.yml, opzionale) ──────
+
+	redir /sonar /sonar/ 301
+
+	# Niente handle_path: SONAR_WEB_CONTEXT=/sonar (docker-compose.qa.yml)
+	# dice a SonarQube stesso di vivere sotto questo prefisso, quindi vuole
+	# vedere il path COMPLETO, prefisso incluso - handle_path lo spoglierebbe
+	# e romperebbe il caricamento di asset/link generati dall'app.
+	#
+	# Se lo stack QA non e' avviato, sonarqube:9000 non risolve: Caddy
+	# risponde 502, catturato dalla pagina di attesa in handle_errors sotto
+	# (messaggio "avvio in corso" impreciso in quel caso, ma non un errore
+	# nudo).
+	handle /sonar/* {
+		reverse_proxy sonarqube:9000
+	}
+
 	# ─── / -> Next.js dev server ─────────────────────────────────────
 
 	# L'Host viene propagato inalterato, cosi' il routing multi-tenant per
