@@ -48,13 +48,25 @@ env_value() {
 
 ROOT_DOMAIN="$(env_value COMTER_ROOT_DOMAIN)"
 
-if [ -z "$ROOT_DOMAIN" ] || [ "$ROOT_DOMAIN" = "localhost" ]; then
-    echo "[sync-sites] COMTER_ROOT_DOMAIN non e' impostato su un dominio pubblico"
-    echo "[sync-sites] (vale '$ROOT_DOMAIN'): questo script serve solo in staging."
+# 'localhost' NON esce piu' subito: e' il caso d'uso per far girare lo stack
+# di staging (build self-contained, non il profilo dev) sulla propria
+# macchina con sottodomini per tenant (calabria.localhost, roma.localhost, ...)
+# - risolvono a 127.0.0.1 da soli (RFC 6761), niente DNS/wildcard da
+# configurare. Resta escluso solo il caso "non impostato": li' lo stack non e'
+# affatto configurato per un dominio con sottodomini.
+if [ -z "$ROOT_DOMAIN" ]; then
+    echo "[sync-sites] COMTER_ROOT_DOMAIN non e' impostato: niente da sincronizzare."
     exit 0
 fi
 
-if [ -z "$(docker compose ps -q mariadb 2>/dev/null)" ]; then
+# Stesso overlay che il Makefile passa con $(STAGE)/$(ENV_FILE_STAGE): senza,
+# `docker compose` prova a validare il solo docker-compose.yml base, dove
+# php/horizon/backoffice/comter non hanno ne' `image` ne' `build` (arrivano
+# solo dall'overlay dev/stage) - il progetto risulta invalido e OGNI
+# sottocomando fallisce, anche uno che tocca solo mariadb.
+COMPOSE=(docker compose --env-file .env.stage -f docker-compose.yml -f docker-compose.stage.yml)
+
+if [ -z "$("${COMPOSE[@]}" ps -q mariadb 2>/dev/null)" ]; then
     echo "[sync-sites] mariadb non e' in esecuzione: avvia lo stack prima (make up-stage)."
     exit 1
 fi
@@ -69,7 +81,7 @@ DB_USER="${DB_USER:-fipav}"
 DB_PASSWORD="$(env_value MARIADB_PASSWORD)"
 DB_PASSWORD="${DB_PASSWORD:-fipav}"
 
-SLUGS="$(docker compose exec -T mariadb \
+SLUGS="$("${COMPOSE[@]}" exec -T mariadb \
     mariadb -u"$DB_USER" -p"$DB_PASSWORD" -N -s \
     -e "SELECT slug FROM tenants WHERE attivo = 1 ORDER BY slug" \
     camp2013)"
@@ -110,13 +122,13 @@ else
     echo "[sync-sites]   (nessun comitato attivo)"
 fi
 
-if [ -z "$(docker compose ps -q gateway 2>/dev/null)" ]; then
+if [ -z "$("${COMPOSE[@]}" ps -q gateway 2>/dev/null)" ]; then
     echo "[sync-sites] Il gateway non e' ancora su: il file e' pronto per il suo primo avvio."
     exit 0
 fi
 
 echo "[sync-sites] Ricarico la configurazione di Caddy (nessun container ricreato)..."
-docker compose exec gateway caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+"${COMPOSE[@]}" exec gateway caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
 
 echo "[sync-sites] Fatto. Segui l'emissione dei certificati nuovi con:"
 echo "[sync-sites]   make logs-gateway"
