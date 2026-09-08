@@ -18,7 +18,11 @@
 # server-side di comter non ne hanno comunque bisogno: vedi il blocco statico
 # "http://gateway" nel Caddyfile, che non dipende da nessun hostname pubblico.
 #
-# Uso: scripts/sync-sites.sh   (o `make sync-sites`, o dentro `make up-stage`)
+# Uso: scripts/sync-sites.sh   (o `make sync-sites`)
+#
+# Va lanciato esplicitamente: `make up-stage` non lo invoca piu' da solo (solo
+# se sites.conf manca del tutto ne crea un placeholder vuoto, per non rompere
+# il bind mount del gateway al primo avvio).
 #
 # Non parla ACME/challenge di persona: si limita a dire a Caddy quali
 # hostname servire, e Caddy fa il resto (Automatic HTTPS) come gia' fa oggi.

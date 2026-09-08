@@ -266,28 +266,32 @@ up-stage: ## Avvia lo stack sulla macchina pubblica (HTTPS + porte chiuse)
 	 else \
 	   rm -f docker/mailpit/smtp-auth.new; \
 	 fi
-	@# mariadb prima di tutto il resto, e --wait fino a "healthy": sync-sites.sh
-	@# subito dopo gli interroga `tenants`, e senza aspettare qui la prima
-	@# esecuzione ci arriverebbe prima che il DB accetti connessioni.
+	@# mariadb prima di tutto il resto, --wait fino a "healthy": sync-sites.sh
+	@# (sotto) non e' piu' automatico qui, ma se lo lanci a mano subito dopo
+	@# vuole comunque il DB gia' su.
 	docker compose --env-file $(ENV_FILE_STAGE) $(STAGE) up -d --wait mariadb
-	@# Scrive docker/gateway/stage/sites.conf PRIMA che il gateway esista: cosi'
-	@# al suo primo avvio, qualche riga sotto, lo trova gia' pronto e non serve
-	@# nessun reload. Se sono zero i comitati attivi lo script non fallisce (e'
-	@# uno stato legittimo al primissimo giro, prima di importare i dati): il
-	@# gateway parte comunque, semplicemente senza siti da servire finche' non
-	@# lanci `make sync-sites` a dati importati.
-	./scripts/sync-sites.sh
+	@# NON esegue piu' sync-sites.sh in automatico: va richiesto esplicitamente
+	@# con `make sync-sites`. Qui si garantisce solo che sites.conf esista GIA'
+	@# come file prima che il gateway parta - altrimenti Docker monterebbe una
+	@# DIRECTORY vuota al posto suo (bind mount di un path host inesistente),
+	@# rompendo la config per tutta la vita del container, fino a una
+	@# ricreazione. Se esiste gia' (da un `make sync-sites` precedente) non lo
+	@# tocca, cosi' non si perdono gli hostname gia' sincronizzati.
+	@mkdir -p docker/gateway/stage
+	@test -f docker/gateway/stage/sites.conf || \
+	  printf '# Nessun comitato sincronizzato ancora. Genera con `make sync-sites`.\n' \
+	    > docker/gateway/stage/sites.conf
 	docker compose --env-file $(ENV_FILE_STAGE) $(STAGE) up -d
 	@echo ""
 	@echo "$(GREEN)Stack di staging avviato$(RESET)"
 	@# Rilegge il file ora, non $(STAGE_HOSTS): quella variabile e' valutata
-	@# all'analisi del Makefile, PRIMA che sync-sites.sh lo riscrivesse sopra.
+	@# all'analisi del Makefile, prima che un eventuale sync-sites.sh lo scriva.
 	@hosts="$$(grep -oE '^[a-zA-Z0-9.-]+ \{' docker/gateway/stage/sites.conf 2>/dev/null | sed 's/ {$$//' | tr '\n' ' ')"; \
 	 if [ -n "$$hosts" ]; then \
 	   echo "  Hostname serviti: $$hosts"; \
 	 else \
-	   echo "  $(YELLOW)Nessun hostname servito$(RESET): 0 comitati attivi in tenants."; \
-	   echo "  Importa i dati poi rilancia $(CYAN)make sync-sites$(RESET)."; \
+	   echo "  $(YELLOW)Nessun hostname servito$(RESET): esegui $(CYAN)make sync-sites$(RESET)"; \
+	   echo "  per allinearli ai comitati attivi in tenants."; \
 	 fi
 	@echo ""
 	@echo "$(YELLOW)Al primo avvio$(RESET) Caddy emette i certificati: cerca"
