@@ -21,7 +21,15 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-if [ -z "$(docker compose ps -q mariadb 2>/dev/null)" ]; then
+# Stesso overlay che il Makefile passa con $(STAGE)/$(ENV_FILE_STAGE): senza,
+# `docker compose` prova a validare il solo docker-compose.yml base, dove
+# php/horizon/backoffice/comter non hanno ne' `image` ne' `build` (arrivano
+# solo dall'overlay dev/stage) - il progetto risulta invalido e OGNI
+# sottocomando fallisce, anche uno che tocca solo mariadb (stesso bug gia'
+# corretto in sync-sites.sh).
+COMPOSE=(docker compose --env-file .env.stage -f docker-compose.yml -f docker-compose.stage.yml)
+
+if [ -z "$("${COMPOSE[@]}" ps -q mariadb 2>/dev/null)" ]; then
     echo "[rotate-db-password] mariadb non e' in esecuzione: avvia lo stack prima (make up-stage)."
     exit 1
 fi
@@ -41,7 +49,7 @@ DB_USER="$(env_value .env.stage MARIADB_USER)"
 DB_USER="${DB_USER:-fipav}"
 
 echo "[rotate-db-password] Ruoto la password di '$DB_USER'@'%' sul DB live..."
-docker compose exec -T mariadb mariadb -uroot -p"$ROOT_PASSWORD" \
+"${COMPOSE[@]}" exec -T mariadb mariadb -uroot -p"$ROOT_PASSWORD" \
     -e "ALTER USER '$DB_USER'@'%' IDENTIFIED BY '$NEW_PASSWORD'"
 
 # Aggiorna (o aggiunge) KEY=... in un file .env, senza toccare il resto.
