@@ -55,6 +55,7 @@ services:
       # un env var a runtime non basterebbe, va passato come build arg.
       args:
         VITE_SENTRY_DSN: "${BACKOFFICE_SENTRY_DSN:-}"
+        VITE_API_BASE_URL: "${BACKOFFICE_API_BASE_URL:-/core}"
     # Sostituisce bind mount + volume node_modules della base: l'unico
     # volume che resta e' quello condiviso col gateway, dove il container
     # copia gli asset gia' pronti (il Dockerfile fa il build) e termina.

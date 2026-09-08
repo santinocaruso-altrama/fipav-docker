@@ -26,6 +26,18 @@ COPY . .
 ARG VITE_SENTRY_DSN
 ENV VITE_SENTRY_DSN=$VITE_SENTRY_DSN
 
+# Path relativo (es. "/core"), non un host: lo stesso bundle e' servito
+# identico a ogni sottodominio tenant (vedi docker-compose.stage.yml), quindi
+# non puo' contenere un host fisso - stesso motivo di ASSET_URL lato
+# fipav-core. Mancava del tutto qui (solo VITE_SENTRY_DSN veniva passato come
+# build arg): senza, import.meta.env.VITE_API_BASE_URL restava undefined in
+# ogni build di staging, e src/config/env.ts ricadeva su stringa vuota -
+# axios risolveva sì l'host giusto (relativo alla pagina corrente) ma senza
+# il prefisso /core, 404 su ogni chiamata API del backoffice inclusa
+# /sanctum/csrf-cookie.
+ARG VITE_API_BASE_URL
+ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
+
 # Stessa ragione del command override che questo Dockerfile sostituisce (vedi
 # git blame docker-compose.stage.yml): NODE_ENV va forzato DENTRO il comando,
 # non con un ENV prima - con NODE_ENV=production gia' impostato, `npm ci`
