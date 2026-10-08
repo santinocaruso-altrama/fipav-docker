@@ -308,7 +308,7 @@ network inspect fipav-network` e trovi container di entrambi i progetti.
 
 Per comandi `docker exec` diretti (non tramite `make`/`docker compose exec`) usa il nome
 completo, con il suffisso dell'ambiente che hai avviato: `docker exec fipav-php-dev ...` o
-`fipav-php-stage`.
+`fipav-php-stage` (in production `fipav-stage-php`, creato dal deploy di fipav-core).
 
 Per lo stesso motivo il **`Makefile` di `fipav-core` non funziona** mentre gira questo stack:
 i suoi `docker compose exec` puntano al project `fipav-core`, che è spento. I comandi
@@ -691,7 +691,8 @@ make sync-sites        # hostname dei comitati in docker/gateway/production/site
    docker network connect --alias comter fipav-network-stage fipav-comter-stage
    ```
 6. Rilanciare il deploy di fipav-core (Actions → Deploy stage, o re-run della pipeline del
-   tag). Sostituisce `fipav-php-stage` e `fipav-horizon-stage` con quelli dell'immagine.
+   tag). Ferma e rimuove i vecchi `fipav-php-stage` e `fipav-horizon-stage` e avvia
+   `fipav-stage-php` e `fipav-stage-horizon` dall'immagine.
 
 ## Riferimenti
 
