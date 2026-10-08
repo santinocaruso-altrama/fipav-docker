@@ -624,6 +624,75 @@ Nota per chi ci mette mano: Caddy risponde **200 con corpo vuoto** alle richiest
 handler gestisce. Verificare i soli status code fa passare per funzionanti dei path che non
 servono nulla, quindi i controlli guardano i byte.
 
+## Production: solo infrastruttura, applicazioni dalle pipeline
+
+`docker-compose.production.yml` avvia **solo l'infrastruttura**: gateway (Caddy), MariaDB,
+Redis, Meilisearch e Mailpit. fipav-core, fipav-backoffice e fipav-comter-frontend non sono
+servizi di questo file: li deploya ognuno la propria pipeline, con il proprio compose, e si
+aggancia per nome a quello che questo stack crea.
+
+| Risorsa | Chi la usa |
+|---|---|
+| rete `fipav-network-stage` | php di fipav-core (alias `php`), comter (alias `comter`) |
+| volume `fipav-core_public-stage` | `public/` di fipav-core: la scrive il deploy, il gateway la serve |
+| volume `fipavonline_backoffice-dist-stage` | build del backoffice, servita sotto `/backoffice/` |
+| `CORE_STORAGE_PATH/app/public` | media caricati, serviti sotto `/core/storage/` |
+
+È un file autonomo, non un overlay del base: il base definisce php, horizon, backoffice e
+comter, che qui non devono esistere. Le configurazioni sono in `docker/gateway/production/`,
+`docker/mysql/production/` e `docker/mailpit/production/`, copie di quelle di stage: un fix
+a una delle due (ad esempio a una guardia del Caddyfile) va riportato anche nell'altra.
+I container si chiamano `fipav-stage-<servizio>` (`fipav-stage-gateway`,
+`fipav-stage-mariadb`, …), distinti dai `fipav-<servizio>-stage` del vecchio stack. I due
+stack però non possono girare insieme: usano gli stessi volumi (due MariaDB sullo stesso
+volume lo corrompono) e le stesse porte, e `make up-production` si ferma se trova ancora i
+vecchi container. Rete e volumi restano con il suffisso `-stage`: sono i volumi con i dati
+e i certificati già in uso, e i nomi che i deploy delle applicazioni si aspettano.
+
+Con `.env.production` presente, `make` considera production l'ambiente della macchina: `ps`,
+`logs`, `restart`, `sync-sites`, `backup-db` e `rotate-db-password` agiscono su questo stack,
+e `make up-stage` si rifiuta di partire.
+
+```sh
+make up-production     # avvia (controlli come up-stage, piu' CORE_STORAGE_PATH)
+make down-production   # ferma; i volumi restano
+make sync-sites        # hostname dei comitati in docker/gateway/production/sites.conf
+```
+
+### Passaggio da stage a production (una volta, sulla macchina di stage)
+
+1. Configurazione, partendo da quella di stage. `CORE_STORAGE_PATH` è lo stesso percorso di
+   `vars.CORE_STORAGE_PATH` nell'environment `stage` di fipav-core. Gli hostname già
+   sincronizzati vanno copiati: con un `sites.conf` vuoto il gateway non servirebbe nessun
+   comitato.
+   ```sh
+   cp .env.stage .env.production
+   echo 'CORE_STORAGE_PATH=/opt/fipavonline/fipav-core/src/storage' >> .env.production
+   mkdir -p docker/gateway/production
+   cp docker/gateway/stage/sites.conf docker/gateway/production/sites.conf
+   ```
+2. Togliere i container di infrastruttura dello stage (i volumi con i dati restano). Comando
+   esplicito, non `make`: con `.env.production` presente `make` punta già a production.
+   ```sh
+   docker compose --env-file .env.stage -f docker-compose.yml -f docker-compose.stage.yml \
+     rm -sf gateway mariadb redis mailpit meilisearch
+   ```
+   Da qui fino al deploy di fipav-core, `/core` non risponde: il vecchio php resta sulla
+   rete `fipav-network` senza database.
+3. Avviare l'infrastruttura: `make up-production`.
+4. Volume di `public/` scrivibile da `www-data` del container (Docker è rootless: il
+   `chown` si fa da un container, non con `sudo chown 33:33` sull'host):
+   ```sh
+   docker run --rm -v fipav-core_public-stage:/p alpine chown 33:33 /p
+   ```
+5. Finché comter non arriva dalla sua pipeline, collegare il container di stage alla nuova
+   rete, con il nome che usa il gateway:
+   ```sh
+   docker network connect --alias comter fipav-network-stage fipav-comter-stage
+   ```
+6. Rilanciare il deploy di fipav-core (Actions → Deploy stage, o re-run della pipeline del
+   tag). Sostituisce `fipav-php-stage` e `fipav-horizon-stage` con quelli dell'immagine.
+
 ## Riferimenti
 
 Il design e le alternative scartate sono in

@@ -17,7 +17,8 @@
 # $(ACTIVE_COMPOSE)/$(STAGE)), oppure `docker compose $(STAGE) ...` a mano.
 
 .PHONY: help \
-       up up-dev down down-dev up-stage down-stage sync-sites build rebuild restart ps logs \
+       up up-dev down down-dev up-stage down-stage infra-prepare up-production down-production \
+       sync-sites build rebuild restart ps logs \
        logs-gateway logs-php logs-horizon logs-backoffice logs-comter logs-fe \
        install verify diagnose update pull \
        shell sh-backoffice sh-comter \
@@ -44,6 +45,10 @@
 $(shell touch .env.dev .env.stage)
 -include .env.dev
 -include .env.stage
+# .env.production NON viene creato col touch qui sopra: e' la sua presenza a
+# dire che questa macchina usa docker-compose.production.yml (vedi
+# ACTIVE_COMPOSE piu' sotto). Letto per ultimo, vince sugli altri due.
+-include .env.production
 
 # Quale file passare a `docker compose --env-file` dipende dal target: qui
 # sotto solo le variabili Make (BASE, i controlli di up-stage, ...); i target
@@ -51,6 +56,7 @@ $(shell touch .env.dev .env.stage)
 # giusto esplicitamente, perche' -include sopra non lo dice a `docker compose`.
 ENV_FILE_DEV   := .env.dev
 ENV_FILE_STAGE := .env.stage
+ENV_FILE_PRODUCTION := .env.production
 
 GATEWAY_PORT          ?= 80
 MAILPIT_UI_PORT       ?= 8025
@@ -70,6 +76,9 @@ PROJECT := fipavonline
 # Gli overlay di ambiente vanno sempre applicati sopra il file base, mai da soli.
 DEV   := -f docker-compose.yml -f docker-compose.dev.yml
 STAGE := -f docker-compose.yml -f docker-compose.stage.yml
+# Autonomo, senza il base: solo infrastruttura, le applicazioni arrivano dalle
+# rispettive pipeline (vedi l'intestazione di docker-compose.production.yml).
+PRODUCTION := -f docker-compose.production.yml
 
 # I tre progetti sono repo git distinti, su branch distinti. Percorsi relativi
 # perche' il compose li referenzia allo stesso modo (sibling di questa cartella).
@@ -87,7 +96,19 @@ endif
 # da `tenants` (vedi quello script per i dettagli). Qui si legge lo stesso
 # file, non il DB: sufficiente per BASE/verify/fe-reset, ed evita di
 # duplicare la query per un semplice controllo locale a `make`.
-STAGE_HOSTS := $(shell test -f docker/gateway/stage/sites.conf && grep -oE '^[a-zA-Z0-9.-]+ \{' docker/gateway/stage/sites.conf 2>/dev/null | sed 's/ {$$//')
+#
+# Production ha le proprie copie in docker/*/production/ (vedi
+# docker-compose.production.yml): con .env.production presente, sites.conf e
+# smtp-auth sono quelli. up-stage/up-production le fissano per il proprio
+# ambiente (variabili per target, piu' sotto), qualunque sia quello attivo.
+ifneq ($(wildcard .env.production),)
+GATEWAY_DIR := docker/gateway/production
+SMTP_AUTH   := docker/mailpit/production/smtp-auth
+else
+GATEWAY_DIR := docker/gateway/stage
+SMTP_AUTH   := docker/mailpit/smtp-auth
+endif
+STAGE_HOSTS := $(shell test -f $(GATEWAY_DIR)/sites.conf && grep -oE '^[a-zA-Z0-9.-]+ \{' $(GATEWAY_DIR)/sites.conf 2>/dev/null | sed 's/ {$$//')
 
 # BASE va bene per `make up-dev` (Caddy in chiaro), ma appena sites.conf
 # ha hostname Caddy attiva l'HTTPS automatico e reindirizza (308) ogni
@@ -107,7 +128,15 @@ endif
 # piu' a validare - service "horizon"/"php"/"backoffice"/"comter" non hanno ne'
 # image ne' build senza l'overlay - quindi ANCHE il caso dev deve passare
 # esplicitamente $(DEV), non piu' lasciare i file impliciti.
-ifeq ($(COMTER_ROOT_DOMAIN),)
+#
+# Con .env.production presente l'ambiente attivo e' production, qualunque
+# cosa dica COMTER_ROOT_DOMAIN: ps, logs, restart, sync-sites, backup-db, ...
+# agiscono sullo stack di docker-compose.production.yml.
+ifneq ($(wildcard $(ENV_FILE_PRODUCTION)),)
+ACTIVE_COMPOSE  := $(PRODUCTION)
+ACTIVE_ENV_FILE := $(ENV_FILE_PRODUCTION)
+ACTIVE_SUFFIX   := production
+else ifeq ($(COMTER_ROOT_DOMAIN),)
 ACTIVE_COMPOSE  := $(DEV)
 ACTIVE_ENV_FILE := $(ENV_FILE_DEV)
 ACTIVE_SUFFIX   := dev
@@ -168,7 +197,76 @@ down: down-dev ## Alias di `make down-dev`
 down-dev: ## Ferma e rimuove i container (i volumi restano, DB salvo)
 	docker compose --env-file $(ENV_FILE_DEV) $(DEV) down
 
-up-stage: ## Avvia lo stack sulla macchina pubblica (HTTPS + porte chiuse)
+# Controlli e file generati comuni a up-stage e up-production: stessa
+# configurazione del gateway, di Meilisearch e di Mailpit nei due ambienti.
+infra-prepare:
+	@# In produzione Meilisearch rifiuta di partire con una master key sotto i
+	@# 16 byte: meglio bloccare qui, con le istruzioni, che ritrovarsi il
+	@# container in crash loop. "masterKey" e' il default di sviluppo (vedi
+	@# docker-compose.yml): se e' rimasto quello in staging non e' ne' segreto
+	@# ne' abbastanza lungo.
+	@key="$(MEILI_MASTER_KEY)"; \
+	 if [ "$$key" = "masterKey" ] || [ $${#key} -lt 16 ]; then \
+	   echo ""; \
+	   echo "$(RED)MEILI_MASTER_KEY non e' impostata (o e' troppo corta/il default di sviluppo).$(RESET)"; \
+	   echo "In produzione Meilisearch la richiede lunga almeno 16 byte, altrimenti"; \
+	   echo "non parte. Nel .env.stage (o .env.production) metti una chiave generata, ad esempio:"; \
+	   echo ""; \
+	   echo "  MEILI_MASTER_KEY=$$(openssl rand -base64 24)"; \
+	   echo ""; \
+	   exit 1; \
+	 fi
+	@# Stesso motivo di MEILI_MASTER_KEY: "dev"/l'hash di default sono pubblici
+	@# in questo repo. Qui pesa doppio - vedi sotto, la stessa credenziale
+	@# adesso protegge anche l'SMTP di Mailpit, non solo /core/horizon.
+	@if [ "$(HORIZON_BASIC_AUTH_HASH)" = "$$2a$$14$$YEXcKLvdfMi/qhvCLpdECe2hvamqmVCBOi1gdIyfD7UHX4l2wzBFK" ]; then \
+	   echo ""; \
+	   echo "$(RED)HORIZON_BASIC_AUTH_HASH e' rimasto sul default di sviluppo.$(RESET)"; \
+	   echo "E' l'hash di \"dev\", visibile a chiunque legga questo repo - protegge"; \
+	   echo "sia /core/horizon sia l'SMTP di Mailpit (vedi sotto). Nel .env.stage (o .env.production):"; \
+	   echo ""; \
+	   echo "  HORIZON_BASIC_AUTH_USER=fipav"; \
+	   echo "  HORIZON_BASIC_AUTH_HASH=\$$(docker run --rm caddy:alpine caddy hash-password --plaintext 'una-password')"; \
+	   echo ""; \
+	   exit 1; \
+	 fi
+	@# docker/mailpit/smtp-auth non si genera piu' a mano: stessa credenziale
+	@# di Horizon (utente/hash sopra), riscritto solo se e' cambiato. Un file
+	@# mancante qui monterebbe una DIRECTORY vuota al posto suo (bind mount di
+	@# un path host inesistente) - per questo lo si scrive PRIMA di avviare
+	@# mailpit, non dopo.
+	@mkdir -p $(dir $(SMTP_AUTH))
+	@printf '%s:%s\n' "$(HORIZON_BASIC_AUTH_USER)" "$(HORIZON_BASIC_AUTH_HASH)" > $(SMTP_AUTH).new
+	@if ! cmp -s $(SMTP_AUTH).new $(SMTP_AUTH) 2>/dev/null; then \
+	   mv $(SMTP_AUTH).new $(SMTP_AUTH); \
+	 else \
+	   rm -f $(SMTP_AUTH).new; \
+	 fi
+	@# NON esegue piu' sync-sites.sh in automatico: va richiesto esplicitamente
+	@# con `make sync-sites`. Qui si garantisce solo che sites.conf esista GIA'
+	@# come file prima che il gateway parta - altrimenti Docker monterebbe una
+	@# DIRECTORY vuota al posto suo (bind mount di un path host inesistente),
+	@# rompendo la config per tutta la vita del container, fino a una
+	@# ricreazione. Se esiste gia' (da un `make sync-sites` precedente) non lo
+	@# tocca, cosi' non si perdono gli hostname gia' sincronizzati.
+	@mkdir -p $(GATEWAY_DIR)
+	@test -f $(GATEWAY_DIR)/sites.conf || \
+	  printf '# Nessun comitato sincronizzato ancora. Genera con `make sync-sites`.\n' \
+	    > $(GATEWAY_DIR)/sites.conf
+
+up-stage: GATEWAY_DIR := docker/gateway/stage
+up-stage: SMTP_AUTH   := docker/mailpit/smtp-auth
+up-stage: infra-prepare ## Avvia lo stack sulla macchina pubblica (HTTPS + porte chiuse)
+	@# Stessi nomi di container e volumi di production: su una macchina che e'
+	@# passata a production, up-stage ricreerebbe php/horizon/backoffice/comter
+	@# dal sorgente, in conflitto con quelli delle pipeline.
+	@if [ -f $(ENV_FILE_PRODUCTION) ]; then \
+	   echo ""; \
+	   echo "$(RED)Questa macchina usa production ($(ENV_FILE_PRODUCTION) presente).$(RESET)"; \
+	   echo "Usa $(CYAN)make up-production$(RESET)."; \
+	   echo ""; \
+	   exit 1; \
+	 fi
 	@# COMTER_API_BASE_URL e' una chiamata server-side dentro la rete Docker,
 	@# quindi vuole hostname del container E schema. Senza schema comter fallisce
 	@# a runtime con "Failed to parse URL" e ogni pagina risponde 500: un errore
@@ -202,22 +300,6 @@ up-stage: ## Avvia lo stack sulla macchina pubblica (HTTPS + porte chiuse)
 	   echo ""; \
 	   exit 1; \
 	 fi
-	@# In produzione Meilisearch rifiuta di partire con una master key sotto i
-	@# 16 byte: meglio bloccare qui, con le istruzioni, che ritrovarsi il
-	@# container in crash loop. "masterKey" e' il default di sviluppo (vedi
-	@# docker-compose.yml): se e' rimasto quello in staging non e' ne' segreto
-	@# ne' abbastanza lungo.
-	@key="$(MEILI_MASTER_KEY)"; \
-	 if [ "$$key" = "masterKey" ] || [ $${#key} -lt 16 ]; then \
-	   echo ""; \
-	   echo "$(RED)MEILI_MASTER_KEY non e' impostata (o e' troppo corta/il default di sviluppo).$(RESET)"; \
-	   echo "In produzione Meilisearch la richiede lunga almeno 16 byte, altrimenti"; \
-	   echo "non parte. Nel .env.stage metti una chiave generata, ad esempio:"; \
-	   echo ""; \
-	   echo "  MEILI_MASTER_KEY=$$(openssl rand -base64 24)"; \
-	   echo ""; \
-	   exit 1; \
-	 fi
 	@# MARIADB_USER/PASSWORD qui e DB_USERNAME/DB_PASSWORD in fipav-core sono
 	@# due copie indipendenti delle stesse credenziali (php si connette con
 	@# quelle sue, non con queste): se divergono php perde silenziosamente la
@@ -240,53 +322,16 @@ up-stage: ## Avvia lo stack sulla macchina pubblica (HTTPS + porte chiuse)
 	     exit 1; \
 	   fi; \
 	 fi
-	@# Stesso motivo di MEILI_MASTER_KEY: "dev"/l'hash di default sono pubblici
-	@# in questo repo. Qui pesa doppio - vedi sotto, la stessa credenziale
-	@# adesso protegge anche l'SMTP di Mailpit, non solo /core/horizon.
-	@if [ "$(HORIZON_BASIC_AUTH_HASH)" = "$$2a$$14$$YEXcKLvdfMi/qhvCLpdECe2hvamqmVCBOi1gdIyfD7UHX4l2wzBFK" ]; then \
-	   echo ""; \
-	   echo "$(RED)HORIZON_BASIC_AUTH_HASH e' rimasto sul default di sviluppo.$(RESET)"; \
-	   echo "E' l'hash di \"dev\", visibile a chiunque legga questo repo - protegge"; \
-	   echo "sia /core/horizon sia l'SMTP di Mailpit (vedi sotto). Nel .env.stage:"; \
-	   echo ""; \
-	   echo "  HORIZON_BASIC_AUTH_USER=fipav"; \
-	   echo "  HORIZON_BASIC_AUTH_HASH=\$$(docker run --rm caddy:alpine caddy hash-password --plaintext 'una-password')"; \
-	   echo ""; \
-	   exit 1; \
-	 fi
-	@# docker/mailpit/smtp-auth non si genera piu' a mano: stessa credenziale
-	@# di Horizon (utente/hash sopra), riscritto solo se e' cambiato. Un file
-	@# mancante qui monterebbe una DIRECTORY vuota al posto suo (bind mount di
-	@# un path host inesistente) - per questo lo si scrive PRIMA di avviare
-	@# mailpit, non dopo.
-	@mkdir -p docker/mailpit
-	@printf '%s:%s\n' "$(HORIZON_BASIC_AUTH_USER)" "$(HORIZON_BASIC_AUTH_HASH)" > docker/mailpit/smtp-auth.new
-	@if ! cmp -s docker/mailpit/smtp-auth.new docker/mailpit/smtp-auth 2>/dev/null; then \
-	   mv docker/mailpit/smtp-auth.new docker/mailpit/smtp-auth; \
-	 else \
-	   rm -f docker/mailpit/smtp-auth.new; \
-	 fi
 	@# mariadb prima di tutto il resto, --wait fino a "healthy": sync-sites.sh
 	@# (sotto) non e' piu' automatico qui, ma se lo lanci a mano subito dopo
 	@# vuole comunque il DB gia' su.
 	docker compose --env-file $(ENV_FILE_STAGE) $(STAGE) up -d --wait mariadb
-	@# NON esegue piu' sync-sites.sh in automatico: va richiesto esplicitamente
-	@# con `make sync-sites`. Qui si garantisce solo che sites.conf esista GIA'
-	@# come file prima che il gateway parta - altrimenti Docker monterebbe una
-	@# DIRECTORY vuota al posto suo (bind mount di un path host inesistente),
-	@# rompendo la config per tutta la vita del container, fino a una
-	@# ricreazione. Se esiste gia' (da un `make sync-sites` precedente) non lo
-	@# tocca, cosi' non si perdono gli hostname gia' sincronizzati.
-	@mkdir -p docker/gateway/stage
-	@test -f docker/gateway/stage/sites.conf || \
-	  printf '# Nessun comitato sincronizzato ancora. Genera con `make sync-sites`.\n' \
-	    > docker/gateway/stage/sites.conf
 	docker compose --env-file $(ENV_FILE_STAGE) $(STAGE) up -d
 	@echo ""
 	@echo "$(GREEN)Stack di staging avviato$(RESET)"
 	@# Rilegge il file ora, non $(STAGE_HOSTS): quella variabile e' valutata
 	@# all'analisi del Makefile, prima che un eventuale sync-sites.sh lo scriva.
-	@hosts="$$(grep -oE '^[a-zA-Z0-9.-]+ \{' docker/gateway/stage/sites.conf 2>/dev/null | sed 's/ {$$//' | tr '\n' ' ')"; \
+	@hosts="$$(grep -oE '^[a-zA-Z0-9.-]+ \{' $(GATEWAY_DIR)/sites.conf 2>/dev/null | sed 's/ {$$//' | tr '\n' ' ')"; \
 	 if [ -n "$$hosts" ]; then \
 	   echo "  Hostname serviti: $$hosts"; \
 	 else \
@@ -300,6 +345,57 @@ up-stage: ## Avvia lo stack sulla macchina pubblica (HTTPS + porte chiuse)
 
 down-stage: ## Ferma lo stack di staging
 	docker compose --env-file $(ENV_FILE_STAGE) $(STAGE) down
+
+up-production: GATEWAY_DIR := docker/gateway/production
+up-production: SMTP_AUTH   := docker/mailpit/production/smtp-auth
+up-production: infra-prepare ## Avvia l'infrastruttura (gateway, DB, Redis, ...) senza le applicazioni
+	@if [ ! -f $(ENV_FILE_PRODUCTION) ]; then \
+	   echo ""; \
+	   echo "$(RED)Manca $(ENV_FILE_PRODUCTION).$(RESET) Partendo dallo stage:"; \
+	   echo ""; \
+	   echo "  cp .env.stage $(ENV_FILE_PRODUCTION)"; \
+	   echo "  echo CORE_STORAGE_PATH=/percorso/di/storage >> $(ENV_FILE_PRODUCTION)"; \
+	   echo ""; \
+	   exit 1; \
+	 fi
+	@# Lo stesso storage/ che il deploy di fipav-core monta in php
+	@# (vars.CORE_STORAGE_PATH): il gateway ne serve i media pubblici.
+	@if [ -z "$(CORE_STORAGE_PATH)" ] || [ ! -d "$(CORE_STORAGE_PATH)/app/public" ]; then \
+	   echo ""; \
+	   echo "$(RED)CORE_STORAGE_PATH non e' impostata o non contiene app/public.$(RESET)  (valore: $(CORE_STORAGE_PATH))"; \
+	   echo "Deve essere lo stesso percorso di vars.CORE_STORAGE_PATH nell'environment"; \
+	   echo "stage di fipav-core: lo storage/ di Laravel sull'host."; \
+	   echo ""; \
+	   exit 1; \
+	 fi
+	@# Gateway e servizi del vecchio stack di stage vanno tolti prima, una
+	@# volta (i volumi con i dati restano). I nomi dei container sono diversi
+	@# (fipav-gateway-stage -> fipav-stage-gateway), quindi Docker non
+	@# segnalerebbe nessun conflitto: partirebbero due MariaDB (e Redis,
+	@# Meilisearch) sullo stesso volume, che lo corrompono, e il gateway
+	@# fallirebbe sulle porte 80/443. comter e backoffice di stage no: possono
+	@# restare finche' non arrivano dalle loro pipeline (vedi README).
+	@old=""; \
+	 for c in fipav-gateway-stage fipav-mariadb-stage fipav-redis-stage fipav-mailpit-stage fipav-meilisearch-stage; do \
+	   p="$$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' $$c 2>/dev/null || true)"; \
+	   [ "$$p" = "$(PROJECT)" ] && old="$$old $$c"; \
+	 done; \
+	 if [ -n "$$old" ]; then \
+	   echo ""; \
+	   echo "$(RED)C'e' ancora lo stack di stage:$(RESET) $$old"; \
+	   echo "Passaggio a production descritto nel README (sezione Production)."; \
+	   echo ""; \
+	   exit 1; \
+	 fi
+	docker compose --env-file $(ENV_FILE_PRODUCTION) $(PRODUCTION) up -d --wait mariadb
+	docker compose --env-file $(ENV_FILE_PRODUCTION) $(PRODUCTION) up -d
+	@echo ""
+	@echo "$(GREEN)Infrastruttura avviata$(RESET) (rete fipav-network-stage)."
+	@echo "  Le applicazioni arrivano dalle pipeline: fipav-core con deploy-stage.yml."
+	@echo "  Hostname: $(CYAN)make sync-sites$(RESET) se $(GATEWAY_DIR)/sites.conf e' ancora vuoto."
+
+down-production: ## Ferma l'infrastruttura (i volumi restano)
+	docker compose --env-file $(ENV_FILE_PRODUCTION) $(PRODUCTION) down
 
 sync-sites: ## Riallinea gli hostname del gateway ai comitati attivi in DB (solo staging)
 	./scripts/sync-sites.sh
@@ -462,7 +558,7 @@ verify: ## Esegue i criteri di accettazione della spec
 	@if [ -n "$(STAGE_HOSTS)" ]; then \
 	   second="$(word 2,$(STAGE_HOSTS))"; \
 	   if [ -z "$$second" ]; then \
-	     printf "$(YELLOW)SALTATO$(RESET)  (un solo hostname in docker/gateway/stage/sites.conf)\n"; \
+	     printf "$(YELLOW)SALTATO$(RESET)  (un solo hostname in $(GATEWAY_DIR)/sites.conf)\n"; \
 	   else \
 	     code=$$(curl -s -o /dev/null -w '%{http_code}' https://$$second/); \
 	     if [ "$$code" = "200" ]; then printf "$(GREEN)OK$(RESET)  ($$second)\n"; \

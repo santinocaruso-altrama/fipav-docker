@@ -1,0 +1,159 @@
+# Infrastruttura della macchina pubblica quando le applicazioni arrivano
+# dalle pipeline: gateway (Caddy), MariaDB, Redis, Meilisearch, Mailpit.
+#
+#   make up-production       (oppure, a mano:)
+#   docker compose --env-file .env.production -f docker-compose.production.yml up -d
+#
+# File AUTONOMO, non un overlay di docker-compose.yml: il base definisce php,
+# horizon, backoffice e comter, che qui non devono esistere. fipav-core,
+# fipav-backoffice e fipav-comter-frontend li deploya ognuno la propria
+# pipeline, con il proprio compose, agganciandosi per nome a quello che questo
+# file crea:
+#
+#   rete    fipav-network-stage       php (alias `php`), comter (alias `comter`)
+#   volume  fipav-core_public-stage   public/ di fipav-core, riempita dal deploy
+#   volume  fipavonline_backoffice-dist-stage   build del backoffice
+#
+# I valori sono quelli di docker-compose.yml + docker-compose.stage.yml per gli
+# stessi servizi, le configurazioni in docker/*/production/ sono copie di
+# quelle di stage: un cambio a uno dei due va riportato anche nell'altro.
+#
+# Container fipav-stage-<servizio>, distinti da quelli del vecchio stack di
+# stage (fipav-<servizio>-stage), che vanno tolti prima: stessi volumi e
+# stesse porte, i due stack non possono girare insieme (`make up-production`
+# lo controlla). Rete e volumi restano con il suffisso -stage: sono i volumi
+# con i dati (DB, certificati) e i nomi che i deploy delle applicazioni si
+# aspettano.
+
+name: fipavonline-production
+
+x-common: &common
+  restart: unless-stopped
+  networks:
+    - fipav-network-stage
+
+services:
+  # ─── Gateway: l'unico ingresso HTTP/HTTPS ────────────────────────
+  # Configurazione Caddy in docker/gateway/production/ (copia di quella di
+  # stage). Niente checkout di fipav-core montato: public/ arriva dal volume
+  # che riempie il deploy di fipav-core.
+  gateway:
+    <<: *common
+    image: caddy:alpine
+    container_name: fipav-stage-gateway
+    mem_limit: 256m
+    ports:
+      - "${GATEWAY_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      TZ: Europe/Rome
+      ACME_CA: "${ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}"
+      HORIZON_BASIC_AUTH_USER: "${HORIZON_BASIC_AUTH_USER:?HORIZON_BASIC_AUTH_USER mancante}"
+      HORIZON_BASIC_AUTH_HASH: "${HORIZON_BASIC_AUTH_HASH:?HORIZON_BASIC_AUTH_HASH mancante}"
+    volumes:
+      - ./docker/gateway/production/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./docker/gateway/production/backoffice.conf:/etc/caddy/backoffice.conf:ro
+      # `make up-production` lo crea se manca, prima di questo `up`: senza,
+      # Docker monterebbe una directory vuota al posto suo.
+      - ./docker/gateway/production/sites.conf:/etc/caddy/sites.conf:ro
+      - caddy-data:/data
+      - caddy-config:/config
+      - backoffice-dist:/srv/backoffice:ro
+      # public/ di fipav-core: la copia il deploy (deploy-stage.yml) a ogni
+      # versione. Stesso percorso che il Caddyfile usa come root di /core.
+      - core-public:/var/www/html/public:ro
+      # public/storage nell'immagine e' un link a
+      # /var/www/html/storage/app/public: qui serve solo quella sottocartella
+      # (i media caricati), non log e cache del resto di storage/.
+      - "${CORE_STORAGE_PATH:?CORE_STORAGE_PATH mancante}/app/public:/var/www/html/storage/app/public:ro"
+
+  # ─── Infrastruttura ──────────────────────────────────────────────
+  # Nessuna porta pubblicata: ci arrivano solo i container sulla rete.
+  # mem_limit e' l'hard cap del cgroup (OOM oltre il limite); macchina da 16 GB
+  # condivisa con le applicazioni - vedi docker-compose.stage.yml.
+  mariadb:
+    <<: *common
+    image: mariadb:11.4
+    container_name: fipav-stage-mariadb
+    mem_limit: 4g
+    environment:
+      TZ: Europe/Rome
+      MARIADB_ROOT_PASSWORD: "${MARIADB_ROOT_PASSWORD:?MARIADB_ROOT_PASSWORD mancante}"
+      # Usati solo alla creazione del volume (init.sh): su un volume esistente
+      # si ruotano con `make rotate-db-password`.
+      MARIADB_USER: "${MARIADB_USER:?MARIADB_USER mancante}"
+      MARIADB_PASSWORD: "${MARIADB_PASSWORD:?MARIADB_PASSWORD mancante}"
+    volumes:
+      - mariadb-data:/var/lib/mysql
+      - ./docker/mysql/init.sh:/docker-entrypoint-initdb.d/init.sh:ro
+      - ./docker/mysql/production/mysql.cnf:/etc/mysql/conf.d/mysql.cnf:ro
+    command: --sql-mode=NO_AUTO_VALUE_ON_ZERO --character-set-server=utf8mb3 --collation-server=utf8mb3_general_ci --local-infile=0
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  # noeviction: e' anche il backend delle code di Horizon, un job cancellato
+  # per far posto e' un lavoro perso.
+  redis:
+    <<: *common
+    image: redis:alpine
+    container_name: fipav-stage-redis
+    mem_limit: 6g
+    command: redis-server --appendonly yes --appendfsync everysec --maxmemory 5gb --maxmemory-policy noeviction
+    environment:
+      TZ: Europe/Rome
+    volumes:
+      - redis-data:/data
+
+  # SMTP con credenziale (la stessa di /core/horizon): `make up-production`
+  # genera docker/mailpit/production/smtp-auth da HORIZON_BASIC_AUTH_USER/HASH.
+  mailpit:
+    <<: *common
+    image: axllent/mailpit:latest
+    container_name: fipav-stage-mailpit
+    mem_limit: 256m
+    environment:
+      TZ: Europe/Rome
+      MP_MAX_MESSAGES: 500
+      MP_SMTP_AUTH_ACCEPT_ANY: 0
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+      MP_SMTP_AUTH_FILE: /data/smtp-auth
+    volumes:
+      - ./docker/mailpit/production/smtp-auth:/data/smtp-auth:ro
+
+  meilisearch:
+    <<: *common
+    image: getmeili/meilisearch:latest
+    container_name: fipav-stage-meilisearch
+    environment:
+      TZ: Europe/Rome
+      MEILI_ENV: production
+      MEILI_MASTER_KEY: "${MEILI_MASTER_KEY:?MEILI_MASTER_KEY mancante}"
+    volumes:
+      - meilisearch-data:/meili_data
+
+# Nomi fissi: sono i volumi gia' in uso dallo stage (dati, certificati). Da non
+# cancellare - nessun target fa `down -v`.
+volumes:
+  mariadb-data:
+    name: fipav-core_mariadb-data-stage
+  meilisearch-data:
+    name: fipav-core_meilisearch-data-stage
+  redis-data:
+    name: fipav-core_redis-data-stage
+  caddy-data:
+    name: fipavonline_caddy-data-stage
+  caddy-config:
+    name: fipavonline_caddy-config-stage
+  backoffice-dist:
+    name: fipavonline_backoffice-dist-stage
+  core-public:
+    name: fipav-core_public-stage
+
+networks:
+  fipav-network-stage:
+    name: fipav-network-stage
+    driver: bridge

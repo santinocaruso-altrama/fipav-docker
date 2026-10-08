@@ -12,6 +12,7 @@
 .env
 .env.dev
 .env.stage
+.env.production
 
 # Dump prodotti da `make db-backups`, che scrive nella root del progetto.
 /*.sql
@@ -26,11 +27,13 @@
 # Generato da scripts/sync-sites.sh dai comitati attivi in DB (solo staging).
 # `make up-stage` lo rigenera da zero se manca: non serve un placeholder.
 /docker/gateway/stage/sites.conf
+/docker/gateway/production/sites.conf
 
 # Credenziali SMTP di Mailpit (solo staging): contiene un hash bcrypt.
 # Generato da `make up-stage` da HORIZON_BASIC_AUTH_USER/HASH, come
 # sites.conf - non serve un placeholder, ne' scriverlo a mano.
 /docker/mailpit/smtp-auth
+/docker/mailpit/production/smtp-auth
 
 # Configurazione locale di scripts/sync-storage.sh: contiene l'hostname SSH
 # reale della macchina di staging. Il template versionato e'

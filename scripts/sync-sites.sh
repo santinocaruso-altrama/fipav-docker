@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Rigenera docker/gateway/stage/sites.conf dai comitati attivi in DB, e se
+# Rigenera docker/gateway/{stage,production}/sites.conf dai comitati attivi in DB, e se
 # e' cambiato ricarica SOLO la configurazione di Caddy (nessun container
 # ricreato). Solo per staging: in locale il sito e' docker/gateway/dev/
 # sites.conf, statico, e questo script esce subito. In produzione non serve nemmeno in staging:
@@ -28,13 +28,15 @@
 # hostname servire, e Caddy fa il resto (Automatic HTTPS) come gia' fa oggi.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# ENV_FILE, COMPOSE, GATEWAY_DIR: stage o production (vedi scripts/env.sh).
+source scripts/env.sh
 
-SITES_FILE="docker/gateway/stage/sites.conf"
+SITES_FILE="$GATEWAY_DIR/sites.conf"
 
-# Con .env.stage assente lo stack non e' configurato per lo staging: niente
-# da generare.
-if [ ! -f .env.stage ]; then
-    echo "[sync-sites] Nessun .env.stage: niente da sincronizzare (serve per lo staging)."
+# Senza .env.stage/.env.production lo stack non e' configurato per una
+# macchina pubblica: niente da generare.
+if [ ! -f "$ENV_FILE" ]; then
+    echo "[sync-sites] Nessun $ENV_FILE: niente da sincronizzare (serve per stage/production)."
     exit 0
 fi
 
@@ -43,7 +45,7 @@ fi
 # bcrypt di HORIZON_BASIC_AUTH_HASH, "$2a$14$..."), che un `source` proverebbe
 # a espandere come parametri posizionali e romperebbe lo script sotto `set -u`.
 env_value() {
-    grep -E "^${1}=" .env.stage | tail -n1 | cut -d'=' -f2-
+    grep -E "^${1}=" "$ENV_FILE" | tail -n1 | cut -d'=' -f2-
 }
 
 ROOT_DOMAIN="$(env_value COMTER_ROOT_DOMAIN)"
@@ -59,15 +61,9 @@ if [ -z "$ROOT_DOMAIN" ]; then
     exit 0
 fi
 
-# Stesso overlay che il Makefile passa con $(STAGE)/$(ENV_FILE_STAGE): senza,
-# `docker compose` prova a validare il solo docker-compose.yml base, dove
-# php/horizon/backoffice/comter non hanno ne' `image` ne' `build` (arrivano
-# solo dall'overlay dev/stage) - il progetto risulta invalido e OGNI
-# sottocomando fallisce, anche uno che tocca solo mariadb.
-COMPOSE=(docker compose --env-file .env.stage -f docker-compose.yml -f docker-compose.stage.yml)
 
 if [ -z "$("${COMPOSE[@]}" ps -q mariadb 2>/dev/null)" ]; then
-    echo "[sync-sites] mariadb non e' in esecuzione: avvia lo stack prima (make up-stage)."
+    echo "[sync-sites] mariadb non e' in esecuzione: avvia lo stack prima (make up-stage o up-production)."
     exit 1
 fi
 

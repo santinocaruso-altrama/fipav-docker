@@ -17,18 +17,20 @@
 # (la rimozione delle CONSTRAINT che fa quel target serve anche qui).
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# ENV_FILE e COMPOSE: stage o production (vedi scripts/env.sh).
+source scripts/env.sh
 
 BACKUP_DIR="backups"
 RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-14}"
 DATABASES="camp2013 camp2003 corsi2016 live refertoelettronico vnl_ticketing"
 
-if [ -z "$(docker compose ps -q mariadb 2>/dev/null)" ]; then
+if [ -z "$("${COMPOSE[@]}" ps -q mariadb 2>/dev/null)" ]; then
     echo "[backup-db] mariadb non e' in esecuzione: niente da fare."
     exit 1
 fi
 
 env_value() {
-    grep -E "^${1}=" .env.stage 2>/dev/null | tail -n1 | cut -d'=' -f2-
+    grep -E "^${1}=" "$ENV_FILE" 2>/dev/null | tail -n1 | cut -d'=' -f2-
 }
 ROOT_PASSWORD="$(env_value MARIADB_ROOT_PASSWORD)"
 ROOT_PASSWORD="${ROOT_PASSWORD:-root}"
@@ -39,7 +41,7 @@ TMP="$OUT.tmp"
 
 echo "[backup-db] Dump di: $DATABASES"
 # shellcheck disable=SC2086
-docker compose exec -T mariadb mariadb-backups -uroot -p"$ROOT_PASSWORD" --databases $DATABASES \
+"${COMPOSE[@]}" exec -T mariadb mariadb-backups -uroot -p"$ROOT_PASSWORD" --databases $DATABASES \
     | gzip > "$TMP"
 mv "$TMP" "$OUT"
 echo "[backup-db] Salvato $OUT ($(du -h "$OUT" | cut -f1))"

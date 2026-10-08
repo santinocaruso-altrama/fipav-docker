@@ -1,0 +1,15 @@
+# Tuning per production: montato da docker-compose.production.yml in
+# /etc/mysql/conf.d/, che MariaDB legge in aggiunta ai default dell'immagine.
+
+[mysqld]
+
+# ~62% del mem_limit del container in docker-compose.production.yml (4g): il resto
+# resta per connection buffer (sort/join buffer x max_connections), temp
+# table e overhead del processo, così il container non va in OOM contro il
+# proprio cgroup.
+innodb_buffer_pool_size = 2560M
+innodb_log_file_size = 512M
+innodb_flush_log_at_trx_commit = 2
+slow_query_log = 1
+slow_query_log_file = /var/lib/mysql/mariadb-slow.log
+long_query_time = 1

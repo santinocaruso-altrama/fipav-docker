@@ -20,17 +20,11 @@
 # con `make restart`, l'ultimo passo dopo questo script.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-
-# Stesso overlay che il Makefile passa con $(STAGE)/$(ENV_FILE_STAGE): senza,
-# `docker compose` prova a validare il solo docker-compose.yml base, dove
-# php/horizon/backoffice/comter non hanno ne' `image` ne' `build` (arrivano
-# solo dall'overlay dev/stage) - il progetto risulta invalido e OGNI
-# sottocomando fallisce, anche uno che tocca solo mariadb (stesso bug gia'
-# corretto in sync-sites.sh).
-COMPOSE=(docker compose --env-file .env.stage -f docker-compose.yml -f docker-compose.stage.yml)
+# ENV_FILE e COMPOSE: stage o production (vedi scripts/env.sh).
+source scripts/env.sh
 
 if [ -z "$("${COMPOSE[@]}" ps -q mariadb 2>/dev/null)" ]; then
-    echo "[rotate-db-password] mariadb non e' in esecuzione: avvia lo stack prima (make up-stage)."
+    echo "[rotate-db-password] mariadb non e' in esecuzione: avvia lo stack prima (make up-stage o up-production)."
     exit 1
 fi
 
@@ -43,9 +37,9 @@ env_value() {
     grep -E "^${2}=" "$1" 2>/dev/null | tail -n1 | cut -d'=' -f2-
 }
 
-ROOT_PASSWORD="$(env_value .env.stage MARIADB_ROOT_PASSWORD)"
+ROOT_PASSWORD="$(env_value "$ENV_FILE" MARIADB_ROOT_PASSWORD)"
 ROOT_PASSWORD="${ROOT_PASSWORD:-root}"
-DB_USER="$(env_value .env.stage MARIADB_USER)"
+DB_USER="$(env_value "$ENV_FILE" MARIADB_USER)"
 DB_USER="${DB_USER:-fipav}"
 
 echo "[rotate-db-password] Ruoto la password di '$DB_USER'@'%' sul DB live..."
@@ -63,8 +57,16 @@ update_env() {
     fi
 }
 
-echo "[rotate-db-password] Aggiorno .env.stage..."
-update_env .env.stage MARIADB_PASSWORD "$NEW_PASSWORD"
+echo "[rotate-db-password] Aggiorno $ENV_FILE..."
+update_env "$ENV_FILE" MARIADB_PASSWORD "$NEW_PASSWORD"
+
+# In production fipav-core non legge src/.env: le credenziali arrivano dal
+# secret CORE_ENV dell'environment stage di GitHub, che questo script non
+# puo' toccare.
+if [ "$ENV_FILE" = .env.production ]; then
+    echo "[rotate-db-password] ATTENZIONE: aggiorna DB_PASSWORD nel secret CORE_ENV di fipav-core"
+    echo "                     (Settings -> Environments -> stage) e rilancia il deploy."
+fi
 
 CORE_ENV="../fipav-core/src/.env"
 if [ -f "$CORE_ENV" ]; then
